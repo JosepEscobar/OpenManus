@@ -360,8 +360,8 @@ class LLM:
         return formatted_messages
 
     @retry(
-        wait=wait_random_exponential(min=1, max=60),
-        stop=stop_after_attempt(6),
+        wait=wait_random_exponential(min=30, max=120),  # Aumentamos el tiempo mínimo a 30 segundos
+        stop=stop_after_attempt(3),  # Reducimos el número de intentos
         retry=retry_if_exception_type(
             (OpenAIError, Exception, ValueError)
         ),  # Don't retry TokenLimitExceeded
@@ -479,8 +479,10 @@ class LLM:
                 logger.error("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
                 logger.error("Rate limit exceeded. Consider increasing retry attempts.")
-                logger.error("Waiting 30 seconds before retrying...")
-                await asyncio.sleep (30)
+                wait_time = 60  # Wait 60 seconds for rate limits
+                logger.error(f"Waiting {wait_time} seconds before retrying...")
+                print(f"⚠️ Rate limit reached. Waiting {wait_time} seconds before retrying...")
+                await asyncio.sleep(wait_time)
             elif isinstance(oe, APIError):
                 logger.error(f"API error: {oe}")
             raise
@@ -489,8 +491,8 @@ class LLM:
             raise
 
     @retry(
-        wait=wait_random_exponential(min=1, max=60),
-        stop=stop_after_attempt(6),
+        wait=wait_random_exponential(min=30, max=120),  # Aumentamos el tiempo mínimo a 30 segundos
+        stop=stop_after_attempt(3),  # Reducimos el número de intentos
         retry=retry_if_exception_type(
             (OpenAIError, Exception, ValueError)
         ),  # Don't retry TokenLimitExceeded
@@ -637,6 +639,9 @@ class LLM:
                 logger.error("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
                 logger.error("Rate limit exceeded. Consider increasing retry attempts.")
+                wait_time = 60  # Wait 60 seconds for rate limits
+                logger.error(f"Waiting {wait_time} seconds before retrying...")
+                await asyncio.sleep(wait_time)
             elif isinstance(oe, APIError):
                 logger.error(f"API error: {oe}")
             raise
@@ -645,8 +650,8 @@ class LLM:
             raise
 
     @retry(
-        wait=wait_random_exponential(min=1, max=60),
-        stop=stop_after_attempt(6),
+        wait=wait_random_exponential(min=30, max=120),  # Aumentamos el tiempo mínimo a 30 segundos
+        stop=stop_after_attempt(3),  # Reducimos el número de intentos
         retry=retry_if_exception_type(
             (OpenAIError, Exception, ValueError)
         ),  # Don't retry TokenLimitExceeded
@@ -767,6 +772,10 @@ class LLM:
                 logger.error("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
                 logger.error("Rate limit exceeded. Consider increasing retry attempts.")
+                wait_time = 60  # Wait 60 seconds for rate limits
+                logger.error(f"Waiting {wait_time} seconds before retrying...")
+                print(f"⚠️ Rate limit reached. Waiting {wait_time} seconds before retrying...")
+                await asyncio.sleep(wait_time)
             elif isinstance(oe, APIError):
                 logger.error(f"API error: {oe}")
             raise

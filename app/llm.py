@@ -42,9 +42,10 @@ MULTIMODAL_MODELS = [
 ]
 
 def wait_with_logging(retry_state):
-    """Custom wait function that logs the wait time"""
-    wait_time = wait_random_exponential(min=30, max=60)(retry_state)
-    logger.error(f"Waiting {wait_time:.1f} seconds before retrying...")
+    """Custom wait function that logs the wait time and attempt number"""
+    wait_time = 60  # Fixed wait time of 60 seconds
+    attempt_number = retry_state.attempt_number
+    logger.error(f"Rate limit hit. Attempt {attempt_number}/6. Waiting {wait_time} seconds before retrying...")
     return wait_time
 
 class TokenCounter:

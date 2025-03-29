@@ -1,4 +1,5 @@
 import math
+import asyncio
 from typing import Dict, List, Optional, Union
 
 import tiktoken
@@ -478,6 +479,8 @@ class LLM:
                 logger.error("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
                 logger.error("Rate limit exceeded. Consider increasing retry attempts.")
+                logger.error("Waiting 30 seconds before retrying...")
+                await asyncio.sleep (30)
             elif isinstance(oe, APIError):
                 logger.error(f"API error: {oe}")
             raise

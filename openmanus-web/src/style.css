@@ -1,0 +1,55 @@
+/* Global styles for OpenManus web interface */
+
+* {
+    box-sizing: border-box;
+}
+
+body,
+html {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    width: 100%;
+}
+
+/* Font Awesome placeholder styles */
+/* In a production environment, you would import the actual Font Awesome library */
+.fas {
+    font-family: sans-serif;
+    position: relative;
+}
+
+.fas.fa-folder:before {
+    content: "📁";
+}
+
+.fas.fa-file:before {
+    content: "📄";
+}
+
+.fas.fa-sync:before {
+    content: "🔄";
+}
+
+.fas.fa-paper-plane:before {
+    content: "📨";
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--vscode-bg);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--vscode-secondary);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--vscode-primary);
+}

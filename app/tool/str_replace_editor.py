@@ -22,6 +22,7 @@ Command = Literal[
     "str_replace",
     "insert",
     "undo_edit",
+    "rename",
 ]
 
 # Constants
@@ -40,6 +41,7 @@ _STR_REPLACE_EDITOR_DESCRIPTION = """Custom editing tool for viewing, creating a
 * The `create` command cannot be used if the specified `path` already exists as a file
 * If a `command` generates a long output, it will be truncated and marked with `<response clipped>`
 * The `undo_edit` command will revert the last edit made to the file at `path`
+* The `rename` command will rename/move a file from `path` to `new_path`
 
 Notes for using the `str_replace` command:
 * The `old_str` parameter should match EXACTLY one or more consecutive lines from the original file. Be mindful of whitespaces!
@@ -66,12 +68,16 @@ class StrReplaceEditor(BaseTool):
         "type": "object",
         "properties": {
             "command": {
-                "description": "The commands to run. Allowed options are: `view`, `create`, `str_replace`, `insert`, `undo_edit`.",
-                "enum": ["view", "create", "str_replace", "insert", "undo_edit"],
+                "description": "The commands to run. Allowed options are: `view`, `create`, `str_replace`, `insert`, `undo_edit`, `rename`.",
+                "enum": ["view", "create", "str_replace", "insert", "undo_edit", "rename"],
                 "type": "string",
             },
             "path": {
                 "description": "Absolute path to file or directory.",
+                "type": "string",
+            },
+            "new_path": {
+                "description": "Required parameter of `rename` command, with the new path for the file.",
                 "type": "string",
             },
             "file_text": {
@@ -121,6 +127,7 @@ class StrReplaceEditor(BaseTool):
         old_str: str | None = None,
         new_str: str | None = None,
         insert_line: int | None = None,
+        new_path: str | None = None,
         **kwargs: Any,
     ) -> str:
         """Execute a file operation command."""
@@ -155,6 +162,10 @@ class StrReplaceEditor(BaseTool):
             result = await self.insert(path, insert_line, new_str, operator)
         elif command == "undo_edit":
             result = await self.undo_edit(path, operator)
+        elif command == "rename":
+            if new_path is None:
+                raise ToolError("Parameter `new_path` is required for command: rename")
+            result = await self.rename(path, new_path, operator)
         else:
             # This should be caught by type checking, but we include it for safety
             raise ToolError(
@@ -180,9 +191,9 @@ class StrReplaceEditor(BaseTool):
 
             # Check if path is a directory
             is_dir = await operator.is_directory(path)
-            if is_dir and command != "view":
+            if is_dir and command not in ["view", "rename"]:
                 raise ToolError(
-                    f"The path {path} is a directory and only the `view` command can be used on directories"
+                    f"The path {path} is a directory and only the `view` or `rename` commands can be used on directories"
                 )
 
         # Check if file exists for create command
@@ -403,6 +414,37 @@ class StrReplaceEditor(BaseTool):
 
         return CLIResult(
             output=f"Last edit to {path} undone successfully. {self._make_output(old_text, str(path))}"
+        )
+
+    async def rename(
+        self,
+        path: PathLike,
+        new_path: PathLike,
+        operator: FileOperator = None,
+    ) -> CLIResult:
+        """Rename a file or directory."""
+        if not Path(new_path).is_absolute():
+            raise ToolError(f"The new_path {new_path} is not an absolute path")
+
+        # Check if the destination already exists
+        if await operator.exists(new_path):
+            raise ToolError(f"Cannot rename: destination path {new_path} already exists")
+
+        # Save the file content to history if it's a file
+        if not await operator.is_directory(path):
+            content = await operator.read_file(path)
+            self._file_history[path].append(content)
+
+        # Perform the rename operation
+        await operator.rename_file(path, new_path)
+
+        # Update history for the new path if it's a file
+        if not await operator.is_directory(new_path) and path in self._file_history:
+            # Move the history to the new path
+            self._file_history[new_path] = self._file_history[path]
+
+        return CLIResult(
+            output=f"File successfully renamed from {path} to {new_path}"
         )
 
     def _make_output(

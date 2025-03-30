@@ -153,27 +153,69 @@ class WebSocketManager:
 
             # Tomar una instantánea del árbol de archivos antes
             workspace_path = os.path.join(os.getcwd(), "workspace")
-            files_before = set()
+            files_before = {}
+            files_before_set = set()
+
             if os.path.exists(workspace_path):
                 for root, dirs, files in os.walk(workspace_path):
                     for file in files:
-                        files_before.add(os.path.join(root, file))
+                        file_path = os.path.join(root, file)
+                        files_before[file_path] = {
+                            "path": file_path,
+                            "mtime": os.path.getmtime(file_path),
+                            "size": os.path.getsize(file_path),
+                            "name": file
+                        }
+                        files_before_set.add(file_path)
 
             # Ejecutar Manus directamente con el prompt del usuario
             logger.info(f"Ejecutando OpenManus con prompt: {content}")
             await agent.run(content)
 
             # Obtener archivos creados durante la ejecución
-            files_after = set()
-            newly_created_files = []
+            files_after = {}
+            files_after_set = set()
+
             if os.path.exists(workspace_path):
                 for root, dirs, files in os.walk(workspace_path):
                     for file in files:
                         file_path = os.path.join(root, file)
-                        files_after.add(file_path)
-                        # Si el archivo es nuevo o modificado
-                        if file_path not in files_before or os.path.getmtime(file_path) > start_time:
-                            newly_created_files.append(file_path)
+                        files_after[file_path] = {
+                            "path": file_path,
+                            "mtime": os.path.getmtime(file_path),
+                            "size": os.path.getsize(file_path),
+                            "name": file
+                        }
+                        files_after_set.add(file_path)
+
+            # Detectar cambios en los archivos
+            newly_created_files = []
+            modified_files = []
+            renamed_files = []
+
+            # Archivos nuevos (no existían antes)
+            new_files = files_after_set - files_before_set
+            for file_path in new_files:
+                # Verificar si podría ser un archivo renombrado
+                is_rename = False
+                for old_path in files_before_set - files_after_set:
+                    if (files_before[old_path]["size"] == files_after[file_path]["size"] or
+                        files_before[old_path]["name"] == files_after[file_path]["name"]):
+                        # Es probable que sea un archivo renombrado
+                        renamed_files.append({
+                            "old_path": old_path,
+                            "new_path": file_path
+                        })
+                        is_rename = True
+                        break
+
+                if not is_rename:
+                    newly_created_files.append(file_path)
+
+            # Archivos modificados (existían antes pero han cambiado)
+            for file_path in files_before_set.intersection(files_after_set):
+                if files_after[file_path]["mtime"] > start_time:
+                    modified_files.append(file_path)
 
             # Notificar que la solicitud se completó
             await self.broadcast({
@@ -186,23 +228,34 @@ class WebSocketManager:
             # Actualizar el árbol de archivos
             await self.send_file_tree()
 
-            # Si se crearon nuevos archivos, mostrar el primero
-            if newly_created_files:
-                # Ordenar por tiempo de modificación (más reciente primero)
-                newly_created_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
-                latest_file = newly_created_files[0]
+            # Determinar qué archivo debemos mostrar
+            file_to_show = None
+            file_action = None
 
+            # Prioridad: Renombrado > Modificado > Creado
+            if renamed_files:
+                file_to_show = renamed_files[0]["new_path"]
+                file_action = "renombrado"
+            elif modified_files:
+                file_to_show = modified_files[0]
+                file_action = "modificado"
+            elif newly_created_files:
+                file_to_show = newly_created_files[0]
+                file_action = "creado"
+
+            # Si se encontró un archivo para mostrar
+            if file_to_show:
                 # Enviar notificación para seleccionar el archivo
-                await self.send_select_file_notification(latest_file)
+                await self.send_select_file_notification(file_to_show)
 
                 # Enviar el contenido del archivo
-                file_content = get_file_content(latest_file)
-                await self.send_file_content(latest_file, file_content)
+                file_content = get_file_content(file_to_show)
+                await self.send_file_content(file_to_show, file_content)
 
                 # Informar al usuario
                 await self.broadcast({
                     "type": "chat",
-                    "content": f"Se ha seleccionado automáticamente el archivo recién creado: {os.path.basename(latest_file)}",
+                    "content": f"Se ha seleccionado automáticamente el archivo {file_action}: {os.path.basename(file_to_show)}",
                     "sender": "assistant",
                     "timestamp": datetime.now().isoformat()
                 })

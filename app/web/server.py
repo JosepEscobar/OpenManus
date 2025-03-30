@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import os
-import re
+from datetime import datetime
 from typing import Dict, List, Optional, Set, Union
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.logger import logger
+from app.agent.manus import Manus
 
 # Modelos para los mensajes
 class Message(BaseModel):
@@ -31,6 +32,7 @@ class WebSocketManager:
         self.active_files: Set[str] = set()
         self.status: str = "idle"
         self.current_action: str = ""
+        self.manus_running = False
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -114,7 +116,20 @@ class WebSocketManager:
         await self.broadcast(message)
 
     async def process_chat_message(self, content: str, timestamp: str, websocket: WebSocket):
-        """Procesa un mensaje de chat y ejecuta comandos simples."""
+        """
+        Procesa un mensaje de chat enviándolo directamente a OpenManus.
+        No realiza ningún procesamiento intermedio, simplemente pasa el prompt.
+        """
+        # Si Manus ya está ejecutándose, no permitimos iniciar otra instancia
+        if self.manus_running:
+            await self.broadcast({
+                "type": "chat",
+                "content": "OpenManus ya está procesando una solicitud. Por favor, espera a que termine.",
+                "sender": "assistant",
+                "timestamp": datetime.now().isoformat()
+            })
+            return
+
         # Mostrar el eco del mensaje para feedback inmediato
         await self.broadcast({
             "type": "chat",
@@ -127,129 +142,85 @@ class WebSocketManager:
         await self.update_status("thinking", f"Procesando: {content}")
 
         try:
-            # Procesar comandos básicos
-            if "crea un archivo" in content.lower() or "crear un archivo" in content.lower():
-                file_path = await self.create_file(content, timestamp)
-                if file_path:
-                    # Enviar notificación para seleccionar el archivo
-                    await self.send_select_file_notification(file_path)
-                    # Enviar el contenido del archivo
-                    content = get_file_content(file_path)
-                    await self.send_file_content(file_path, content)
-            elif "crea un directorio" in content.lower() or "crear un directorio" in content.lower():
-                await self.create_directory(content, timestamp)
-            else:
+            # Marcar que Manus está ejecutándose
+            self.manus_running = True
+
+            # Crear una nueva instancia de Manus para cada solicitud
+            agent = Manus()
+
+            # Registrar el tiempo de inicio para detectar archivos nuevos
+            start_time = datetime.now().timestamp()
+
+            # Tomar una instantánea del árbol de archivos antes
+            workspace_path = os.path.join(os.getcwd(), "workspace")
+            files_before = set()
+            if os.path.exists(workspace_path):
+                for root, dirs, files in os.walk(workspace_path):
+                    for file in files:
+                        files_before.add(os.path.join(root, file))
+
+            # Ejecutar Manus directamente con el prompt del usuario
+            logger.info(f"Ejecutando OpenManus con prompt: {content}")
+            await agent.run(content)
+
+            # Obtener archivos creados durante la ejecución
+            files_after = set()
+            newly_created_files = []
+            if os.path.exists(workspace_path):
+                for root, dirs, files in os.walk(workspace_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        files_after.add(file_path)
+                        # Si el archivo es nuevo o modificado
+                        if file_path not in files_before or os.path.getmtime(file_path) > start_time:
+                            newly_created_files.append(file_path)
+
+            # Notificar que la solicitud se completó
+            await self.broadcast({
+                "type": "chat",
+                "content": "Solicitud completada exitosamente.",
+                "sender": "assistant",
+                "timestamp": datetime.now().isoformat()
+            })
+
+            # Actualizar el árbol de archivos
+            await self.send_file_tree()
+
+            # Si se crearon nuevos archivos, mostrar el primero
+            if newly_created_files:
+                # Ordenar por tiempo de modificación (más reciente primero)
+                newly_created_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+                latest_file = newly_created_files[0]
+
+                # Enviar notificación para seleccionar el archivo
+                await self.send_select_file_notification(latest_file)
+
+                # Enviar el contenido del archivo
+                file_content = get_file_content(latest_file)
+                await self.send_file_content(latest_file, file_content)
+
+                # Informar al usuario
                 await self.broadcast({
                     "type": "chat",
-                    "content": "Lo siento, solo puedo procesar comandos básicos como crear archivos o directorios por ahora.",
+                    "content": f"Se ha seleccionado automáticamente el archivo recién creado: {os.path.basename(latest_file)}",
                     "sender": "assistant",
-                    "timestamp": timestamp
+                    "timestamp": datetime.now().isoformat()
                 })
+
         except Exception as e:
             logger.error(f"Error al procesar el prompt: {e}")
             await self.broadcast({
                 "type": "chat",
                 "content": f"Error al procesar la solicitud: {str(e)}",
                 "sender": "assistant",
-                "timestamp": timestamp
+                "timestamp": datetime.now().isoformat()
             })
         finally:
+            # Marcar que Manus ha terminado
+            self.manus_running = False
+
             # Cambiar el estado a "idle" al finalizar
             await self.update_status("idle", "Esperando instrucciones")
-
-    async def create_file(self, content: str, timestamp: str):
-        """Crea un archivo en el workspace basado en el mensaje."""
-        # Extraer nombre del archivo
-        file_match = re.search(r'llama[a-z]{0,2} (\w+\.\w+)', content.lower())
-        if not file_match:
-            file_match = re.search(r'archivo (?:llamado )?(\w+\.\w+)', content.lower())
-
-        if not file_match:
-            await self.broadcast({
-                "type": "chat",
-                "content": "No pude detectar el nombre del archivo. Por favor, especifica el nombre claramente, por ejemplo: 'Crea un archivo llamado ejemplo.txt'.",
-                "sender": "assistant",
-                "timestamp": timestamp
-            })
-            return None
-
-        filename = file_match.group(1)
-
-        # Extraer contenido
-        content_match = re.search(r'contenido [\'"](.+?)[\'"]', content, re.DOTALL)
-        file_content = content_match.group(1) if content_match else "# Archivo creado por OpenManus\n\nEste es un archivo de ejemplo."
-
-        # Crear el archivo en el workspace
-        workspace_path = os.path.join(os.getcwd(), "workspace")
-        file_path = os.path.join(workspace_path, filename)
-
-        try:
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(file_content)
-
-            await self.broadcast({
-                "type": "chat",
-                "content": f"Archivo '{filename}' creado exitosamente.",
-                "sender": "assistant",
-                "timestamp": timestamp
-            })
-
-            # Actualizar el árbol de archivos
-            await self.send_file_tree()
-
-            return file_path
-
-        except Exception as e:
-            logger.error(f"Error al crear el archivo {filename}: {e}")
-            await self.broadcast({
-                "type": "chat",
-                "content": f"Error al crear el archivo: {str(e)}",
-                "sender": "assistant",
-                "timestamp": timestamp
-            })
-            return None
-
-    async def create_directory(self, content: str, timestamp: str):
-        """Crea un directorio en el workspace basado en el mensaje."""
-        # Extraer nombre del directorio
-        dir_match = re.search(r'directorio (?:llamado )?(\w+)', content.lower())
-
-        if not dir_match:
-            await self.broadcast({
-                "type": "chat",
-                "content": "No pude detectar el nombre del directorio. Por favor, especifica el nombre claramente, por ejemplo: 'Crea un directorio llamado ejemplos'.",
-                "sender": "assistant",
-                "timestamp": timestamp
-            })
-            return
-
-        dirname = dir_match.group(1)
-
-        # Crear el directorio en el workspace
-        workspace_path = os.path.join(os.getcwd(), "workspace")
-        dir_path = os.path.join(workspace_path, dirname)
-
-        try:
-            os.makedirs(dir_path, exist_ok=True)
-
-            await self.broadcast({
-                "type": "chat",
-                "content": f"Directorio '{dirname}' creado exitosamente.",
-                "sender": "assistant",
-                "timestamp": timestamp
-            })
-
-            # Actualizar el árbol de archivos
-            await self.send_file_tree()
-
-        except Exception as e:
-            logger.error(f"Error al crear el directorio {dirname}: {e}")
-            await self.broadcast({
-                "type": "chat",
-                "content": f"Error al crear el directorio: {str(e)}",
-                "sender": "assistant",
-                "timestamp": timestamp
-            })
 
 def scan_directory(path: str) -> List[dict]:
     """Escanea un directorio y devuelve una estructura de árbol de archivos."""
@@ -345,7 +316,7 @@ def create_app():
                         content = message_data.get("content", "")
                         timestamp = message_data.get("timestamp", "")
 
-                        # Procesar el mensaje con comandos básicos
+                        # Procesar el mensaje directamente con OpenManus
                         asyncio.create_task(manager.process_chat_message(content, timestamp, websocket))
 
                 except json.JSONDecodeError:

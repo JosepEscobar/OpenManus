@@ -82,7 +82,7 @@ class WebSocketManager:
         message = {
             "type": "status",
             "status": self.status,
-            "action": self.current_action
+            "action": truncate_text(self.current_action, 50)
         }
         if websocket:
             await self.send_personal_message(message, websocket)
@@ -124,22 +124,22 @@ class WebSocketManager:
         if self.manus_running:
             await self.broadcast({
                 "type": "chat",
-                "content": "OpenManus ya está procesando una solicitud. Por favor, espera a que termine.",
+                "content": truncate_text("OpenManus ya está procesando una solicitud. Por favor, espera a que termine.", 500),
                 "sender": "assistant",
                 "timestamp": datetime.now().isoformat()
             })
             return
 
-        # Mostrar el eco del mensaje para feedback inmediato
+        # Mostrar mensaje inicial para feedback inmediato
         await self.broadcast({
             "type": "chat",
-            "content": f"Echo: {content}",
+            "content": truncate_text("Entendido, procesando tu solicitud...", 500),
             "sender": "assistant",
             "timestamp": timestamp
         })
 
         # Cambiar el estado a "thinking"
-        await self.update_status("thinking", f"Procesando: {content}")
+        await self.update_status("thinking", truncate_text(f"Analizando: {content}", 150))
 
         try:
             # Marcar que Manus está ejecutándose
@@ -150,12 +150,63 @@ class WebSocketManager:
 
             # Configurar el callback para enviar actualizaciones de progreso
             async def progress_callback(message):
-                await self.broadcast({
-                    "type": "chat",
-                    "content": message,
-                    "sender": "assistant",
-                    "timestamp": datetime.now().isoformat()
-                })
+                # Verificar si es una señal especial para actualizar el árbol de archivos
+                if message == "__refresh_file_tree__":
+                    # Actualizar y enviar el árbol de archivos en tiempo real
+                    await self.send_file_tree()
+                    return
+
+                # Enviar mensaje al chat solo si es una notificación importante sobre archivos
+                should_send_to_chat = any([
+                    "Cambios realizados:" in message,
+                    "Error al procesar la solicitud:" in message,
+                    "Tarea completada exitosamente" in message,
+                    message == "Entendido, procesando tu solicitud..."
+                ])
+
+                # Actualizar el estado en base al contenido del mensaje
+                if "__special_status__:" in message:
+                    # Formato especial para actualizar directamente el estado
+                    status_msg = message.split("__special_status__:")[1].strip()
+
+                    # Decidir entre estado "thinking" o "working" según el mensaje
+                    status_type = "thinking" if any([
+                        "Analizando" in status_msg,
+                        "Consultando" in status_msg,
+                        "Evaluando" in status_msg,
+                        "Reflexionando" in status_msg,
+                        "Desarrollando" in status_msg
+                    ]) else "working"
+
+                    await self.update_status(status_type, truncate_text(status_msg, 150))
+                elif "OpenManus está pensando" in message:
+                    await self.update_status("thinking", truncate_text("Analizando el problema...", 150))
+                elif "Consultando al LLM" in message:
+                    await self.update_status("thinking", truncate_text("Generando solución...", 150))
+                elif "Usando herramienta:" in message:
+                    herramienta = message.replace("Usando herramienta:", "").strip()
+                    await self.update_status("working", truncate_text(f"Usando {herramienta}...", 150))
+                elif "Ejecutando " in message and "..." in message:
+                    accion = message.replace("Ejecutando ", "").replace("...", "").strip()
+                    await self.update_status("working", truncate_text(f"Ejecutando {accion}", 150))
+                elif "Completada la ejecución de" in message:
+                    await self.update_status("working", truncate_text("Procesando resultados...", 150))
+                elif "Error" in message or "error" in message:
+                    await self.update_status("error", truncate_text(message[:150], 150))
+                elif "Ejecutando paso" in message:
+                    step_info = message.replace("Ejecutando paso", "").strip()
+                    await self.update_status("working", truncate_text(f"Paso {step_info}", 150))
+                elif "Pensamiento:" in message:
+                    await self.update_status("thinking", truncate_text("Analizando solución...", 150))
+
+                # Para mensajes importantes, enviarlos como chat
+                if should_send_to_chat:
+                    await self.broadcast({
+                        "type": "chat",
+                        "content": truncate_text(message, 500),
+                        "sender": "assistant",
+                        "timestamp": datetime.now().isoformat()
+                    })
 
             # Establecer el callback en el agente
             agent.set_progress_callback(progress_callback)
@@ -230,63 +281,46 @@ class WebSocketManager:
                     modified_files.append(file_path)
 
             # Enviar actualizaciones sobre archivos modificados
-            if newly_created_files:
-                created_files_paths = [os.path.relpath(p, workspace_path) for p in newly_created_files]
-                if len(created_files_paths) <= 3:
-                    created_files_str = ", ".join(created_files_paths)
-                    await self.broadcast({
-                        "type": "chat",
-                        "content": f"OpenManus ha creado los siguientes archivos: {created_files_str}",
-                        "sender": "assistant",
-                        "timestamp": datetime.now().isoformat()
-                    })
-                else:
-                    await self.broadcast({
-                        "type": "chat",
-                        "content": f"OpenManus ha creado {len(created_files_paths)} archivos nuevos",
-                        "sender": "assistant",
-                        "timestamp": datetime.now().isoformat()
-                    })
+            if newly_created_files or modified_files or renamed_files:
+                # Preparar resumen de cambios en archivos
+                changes_summary = []
 
-            if modified_files:
-                modified_files_paths = [os.path.relpath(p, workspace_path) for p in modified_files]
-                if len(modified_files_paths) <= 3:
-                    modified_files_str = ", ".join(modified_files_paths)
-                    await self.broadcast({
-                        "type": "chat",
-                        "content": f"OpenManus ha modificado los siguientes archivos: {modified_files_str}",
-                        "sender": "assistant",
-                        "timestamp": datetime.now().isoformat()
-                    })
-                else:
-                    await self.broadcast({
-                        "type": "chat",
-                        "content": f"OpenManus ha modificado {len(modified_files_paths)} archivos",
-                        "sender": "assistant",
-                        "timestamp": datetime.now().isoformat()
-                    })
+                if newly_created_files:
+                    if len(newly_created_files) <= 3:
+                        created_files_paths = [os.path.relpath(p, workspace_path) for p in newly_created_files]
+                        changes_summary.append(f"Creados: {', '.join(created_files_paths)}")
+                    else:
+                        changes_summary.append(f"Creados: {len(newly_created_files)} archivos")
 
-            if renamed_files:
-                renamed_str = ", ".join([f"{os.path.relpath(r['old_path'], workspace_path)} → {os.path.relpath(r['new_path'], workspace_path)}" for r in renamed_files[:3]])
-                if len(renamed_files) <= 3:
-                    await self.broadcast({
-                        "type": "chat",
-                        "content": f"OpenManus ha renombrado los siguientes archivos: {renamed_str}",
-                        "sender": "assistant",
-                        "timestamp": datetime.now().isoformat()
-                    })
-                else:
-                    await self.broadcast({
-                        "type": "chat",
-                        "content": f"OpenManus ha renombrado {len(renamed_files)} archivos",
-                        "sender": "assistant",
-                        "timestamp": datetime.now().isoformat()
-                    })
+                if modified_files:
+                    if len(modified_files) <= 3:
+                        modified_files_paths = [os.path.relpath(p, workspace_path) for p in modified_files]
+                        changes_summary.append(f"Modificados: {', '.join(modified_files_paths)}")
+                    else:
+                        changes_summary.append(f"Modificados: {len(modified_files)} archivos")
+
+                if renamed_files:
+                    if len(renamed_files) <= 3:
+                        renamed_paths = [f"{os.path.relpath(r['old_path'], workspace_path)} → {os.path.relpath(r['new_path'], workspace_path)}" for r in renamed_files]
+                        changes_summary.append(f"Renombrados: {', '.join(renamed_paths)}")
+                    else:
+                        changes_summary.append(f"Renombrados: {len(renamed_files)} archivos")
+
+                # Enviar un único mensaje con todos los cambios
+                await self.broadcast({
+                    "type": "chat",
+                    "content": truncate_text(f"Cambios realizados: {'. '.join(changes_summary)}", 500),
+                    "sender": "assistant",
+                    "timestamp": datetime.now().isoformat()
+                })
+
+                # Actualizar el estado
+                await self.update_status("working", truncate_text("Archivos actualizados", 150))
 
             # Notificar que la solicitud se completó
             await self.broadcast({
                 "type": "chat",
-                "content": "Solicitud completada exitosamente.",
+                "content": truncate_text("Tarea completada exitosamente.", 500),
                 "sender": "assistant",
                 "timestamp": datetime.now().isoformat()
             })
@@ -318,22 +352,27 @@ class WebSocketManager:
                 file_content = get_file_content(file_to_show)
                 await self.send_file_content(file_to_show, file_content)
 
-                # Informar al usuario
-                await self.broadcast({
-                    "type": "chat",
-                    "content": f"Se ha seleccionado automáticamente el archivo {file_action}: {os.path.basename(file_to_show)}",
-                    "sender": "assistant",
-                    "timestamp": datetime.now().isoformat()
-                })
+                # Actualizar el estado para mostrar qué archivo se seleccionó
+                await self.update_status("idle", truncate_text(f"Archivo {file_action}: {os.path.basename(file_to_show)}", 150))
 
         except Exception as e:
             logger.error(f"Error al procesar el prompt: {e}")
+            error_msg = str(e)
+
+            # Simplificar el mensaje de error para el usuario
+            if len(error_msg) > 100:
+                error_msg = error_msg[:100] + "..."
+
+            # Enviar mensaje de error al chat
             await self.broadcast({
                 "type": "chat",
-                "content": f"Error al procesar la solicitud: {str(e)}",
+                "content": truncate_text(f"Error: {error_msg}", 500),
                 "sender": "assistant",
                 "timestamp": datetime.now().isoformat()
             })
+
+            # Actualizar el estado para mostrar que hubo un error
+            await self.update_status("error", truncate_text(f"Error: {error_msg}", 150))
         finally:
             # Marcar que Manus ha terminado
             self.manus_running = False
@@ -379,6 +418,12 @@ def get_file_content(path: str) -> str:
     except Exception as e:
         logger.error(f"Error al leer el archivo {path}: {e}")
         return f"Error al leer el archivo: {str(e)}"
+
+def truncate_text(text, max_length=500):
+    """Acorta el texto si excede la longitud máxima."""
+    if len(text) <= max_length:
+        return text
+    return text[:max_length-3] + "..."
 
 def create_app():
     app = FastAPI(title="OpenManus Web Server")

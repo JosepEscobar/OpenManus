@@ -1,8 +1,5 @@
 <template>
   <div class="app-container">
-    <div class="chat-column">
-      <ChatBox />
-    </div>
     <div class="workspace-column">
       <div class="status-section">
         <EditorStatus />
@@ -11,6 +8,9 @@
         <FileExplorerLive @fileSelect="handleFileSelect" />
         <FileContentViewer ref="fileContentViewer" />
       </div>
+    </div>
+    <div class="chat-column">
+      <ChatBox />
     </div>
   </div>
 </template>
@@ -63,20 +63,20 @@ body {
 }
 
 .chat-column {
-  flex: 1;
-  border-right: 1px solid var(--vscode-secondary);
+  flex: 1.2;
+  border-left: 1px solid var(--vscode-secondary);
   display: flex;
   flex-direction: column;
 }
 
 .workspace-column {
-  flex: 2;
+  flex: 2.8;
   display: flex;
   flex-direction: column;
 }
 
 .status-section {
-  height: 60px;
+  min-height: 90px;
   border-bottom: 1px solid var(--vscode-secondary);
 }
 

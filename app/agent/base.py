@@ -121,6 +121,7 @@ class BaseAgent(BaseModel, ABC):
         """Set the callback function to be called on progress updates."""
         self._progress_callback = callback
 
+
     async def send_progress_update(self, content: str):
         """Send a progress update message to the client."""
         if self._progress_callback:
@@ -146,11 +147,13 @@ class BaseAgent(BaseModel, ABC):
 
         if request:
             self.update_memory("user", request)
-            await self.send_progress_update(f"OpenManus ha recibido la solicitud: {request}")
+            # Solo enviar actualización de estado, no mensaje al chat
+            await self.send_progress_update("__special_status__: Inicializando análisis de solicitud...")
 
         results: List[str] = []
         async with self.state_context(AgentState.RUNNING):
-            await self.send_progress_update("Iniciando ejecución...")
+            # Solo enviar actualización de estado, no mensaje al chat
+            await self.send_progress_update("__special_status__: Planificando respuesta...")
 
             while (
                 self.current_step < self.max_steps and self.state != AgentState.FINISHED
@@ -158,20 +161,29 @@ class BaseAgent(BaseModel, ABC):
                 self.current_step += 1
                 step_message = f"Ejecutando paso {self.current_step}/{self.max_steps}"
                 logger.info(step_message)
-                await self.send_progress_update(step_message)
+                # Enviar este mensaje como una actualización de estado
+                await self.send_progress_update(f"__special_status__: Ejecutando paso {self.current_step}/{self.max_steps}")
+
+                if self.current_step == 1:
+                    await self.send_progress_update("__special_status__: Comenzando procesamiento...")
 
                 # Ejecutar el paso
                 step_result = await self.step()
 
-                # Enviar actualización sobre el resultado del paso
+                # Registrar el resultado pero no enviar como mensaje de chat
                 if step_result:
-                    step_summary = f"Resultado del paso {self.current_step}: {step_result[:100]}..." if len(step_result) > 100 else step_result
-                    await self.send_progress_update(step_summary)
+                    logger.info(f"Resultado del paso {self.current_step}: {step_result[:100]}..." if len(step_result) > 100 else step_result)
+
+                    # Actualizar estado basado en el número de paso
+                    if self.current_step == 1:
+                        await self.send_progress_update("__special_status__: Buscando solución óptima...")
+                    elif self.current_step % 5 == 0:  # cada 5 pasos
+                        await self.send_progress_update("__special_status__: Avanzando en la resolución...")
 
                 # Check for stuck state
                 if self.is_stuck():
-                    stuck_message = "OpenManus está atascado en un bucle. Intentando nuevas estrategias..."
-                    await self.send_progress_update(stuck_message)
+                    logger.warning("OpenManus está atascado en un bucle. Intentando nuevas estrategias...")
+                    await self.send_progress_update("__special_status__: Cambiando enfoque para resolver el problema...")
                     self.handle_stuck_state()
 
                 results.append(f"Step {self.current_step}: {step_result}")
@@ -179,15 +191,15 @@ class BaseAgent(BaseModel, ABC):
             if self.current_step >= self.max_steps:
                 self.current_step = 0
                 self.state = AgentState.IDLE
-                max_steps_message = f"Terminado: Se alcanzó el número máximo de pasos ({self.max_steps})"
-                await self.send_progress_update(max_steps_message)
-                results.append(max_steps_message)
+                logger.info(f"Terminado: Se alcanzó el número máximo de pasos ({self.max_steps})")
+                await self.send_progress_update("__special_status__: Completado por límite de pasos")
+                results.append(f"Terminated: Reached max steps ({self.max_steps})")
             else:
-                completed_message = "OpenManus ha completado la tarea"
-                await self.send_progress_update(completed_message)
+                logger.info("OpenManus ha completado la tarea")
+                await self.send_progress_update("__special_status__: Finalizando ejecución")
 
         await SANDBOX_CLIENT.cleanup()
-        await self.send_progress_update("Limpieza completada. Listo para nuevas solicitudes.")
+        await self.send_progress_update("__special_status__: Proceso completado")
 
         return "\n".join(results) if results else "No steps executed"
 

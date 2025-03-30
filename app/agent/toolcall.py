@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Any, List, Optional, Union
 
 from pydantic import Field
@@ -9,6 +10,7 @@ from app.logger import logger
 from app.prompt.toolcall import NEXT_STEP_PROMPT, SYSTEM_PROMPT
 from app.schema import TOOL_CHOICE_TYPE, AgentState, Message, ToolCall, ToolChoice
 from app.tool import CreateChatCompletion, Terminate, ToolCollection
+from app.config import MAX_STEPS_TOOL_AGENT
 
 
 TOOL_CALL_REQUIRED = "Tool calls required but none provided"
@@ -32,7 +34,7 @@ class ToolCallAgent(ReActAgent):
     tool_calls: List[ToolCall] = Field(default_factory=list)
     _current_base64_image: Optional[str] = None
 
-    max_steps: int = 30
+    max_steps: int = MAX_STEPS_TOOL_AGENT
     max_observe: Optional[Union[int, bool]] = None
 
     async def think(self) -> bool:
@@ -41,14 +43,14 @@ class ToolCallAgent(ReActAgent):
             user_msg = Message.user_message(self.next_step_prompt)
             self.messages += [user_msg]
 
-            # Enviar actualización de que el agente está pensando
+            # Enviar solo actualización de estado
             if hasattr(self, 'send_progress_update'):
-                await self.send_progress_update("OpenManus está pensando...")
+                await self.send_progress_update("__special_status__: Analizando contexto actual...")
 
         try:
             # Get response with tool options
             if hasattr(self, 'send_progress_update'):
-                await self.send_progress_update("Consultando al LLM para decidir el siguiente paso...")
+                await self.send_progress_update("__special_status__: Consultando al modelo de lenguaje...")
 
             response = await self.llm.ask_tool(
                 messages=self.messages,
@@ -60,9 +62,13 @@ class ToolCallAgent(ReActAgent):
                 tools=self.available_tools.to_params(),
                 tool_choice=self.tool_choices,
             )
+
+            # Actualizar el estado después de obtener respuesta del LLM
+            if hasattr(self, 'send_progress_update'):
+                await self.send_progress_update("__special_status__: Evaluando respuesta del modelo...")
         except ValueError:
             if hasattr(self, 'send_progress_update'):
-                await self.send_progress_update("Error: Valor inválido en la solicitud al LLM")
+                await self.send_progress_update("__special_status__: Error en la solicitud al LLM")
             raise
         except Exception as e:
             # Check if this is a RetryError containing TokenLimitExceeded
@@ -72,7 +78,7 @@ class ToolCallAgent(ReActAgent):
                 logger.error(f"🚨 Token limit error (from RetryError): {token_limit_error}")
 
                 if hasattr(self, 'send_progress_update'):
-                    await self.send_progress_update(f"Error: Se alcanzó el límite de tokens: {str(token_limit_error)}")
+                    await self.send_progress_update("__special_status__: Límite de tokens alcanzado")
 
                 self.memory.add_message(
                     Message.assistant_message(error_msg)
@@ -81,7 +87,7 @@ class ToolCallAgent(ReActAgent):
                 return False
 
             if hasattr(self, 'send_progress_update'):
-                await self.send_progress_update(f"Error inesperado: {str(e)}")
+                await self.send_progress_update("__special_status__: Error inesperado")
 
             raise
 
@@ -96,11 +102,14 @@ class ToolCallAgent(ReActAgent):
             f"🛠️ {self.name} selected {len(tool_calls) if tool_calls else 0} tools to use"
         )
 
-        # Enviar actualizaciones sobre lo que piensa el agente
-        if hasattr(self, 'send_progress_update') and content:
-            # Resumir el contenido si es muy largo
-            thought_summary = content[:200] + "..." if len(content) > 200 else content
-            await self.send_progress_update(f"Pensamiento: {thought_summary}")
+        # Enviar actualización de estado más específica según la respuesta
+        if hasattr(self, 'send_progress_update'):
+            if content and tool_calls:
+                await self.send_progress_update("__special_status__: Procesando respuesta y herramientas...")
+            elif content:
+                await self.send_progress_update("__special_status__: Analizando respuesta textual...")
+            elif tool_calls:
+                await self.send_progress_update("__special_status__: Preparando herramientas seleccionadas...")
 
         if tool_calls:
             logger.info(
@@ -110,14 +119,13 @@ class ToolCallAgent(ReActAgent):
 
             # Enviar actualización sobre las herramientas seleccionadas
             if hasattr(self, 'send_progress_update'):
-                tools_selected = ", ".join([call.function.name for call in tool_calls])
-                await self.send_progress_update(f"Herramientas seleccionadas: {tools_selected}")
+                await self.send_progress_update("__special_status__: Preparando herramientas...")
 
         try:
             if response is None:
                 error_msg = "No response received from the LLM"
                 if hasattr(self, 'send_progress_update'):
-                    await self.send_progress_update(f"Error: {error_msg}")
+                    await self.send_progress_update("__special_status__: Sin respuesta del LLM")
                 raise RuntimeError(error_msg)
 
             # Handle different tool_choices modes
@@ -127,7 +135,7 @@ class ToolCallAgent(ReActAgent):
                         f"🤔 Hmm, {self.name} tried to use tools when they weren't available!"
                     )
                     if hasattr(self, 'send_progress_update'):
-                        await self.send_progress_update("Advertencia: El agente intentó usar herramientas que no están disponibles")
+                        await self.send_progress_update("__special_status__: Herramientas no disponibles")
 
                 if content:
                     self.memory.add_message(Message.assistant_message(content))
@@ -144,13 +152,13 @@ class ToolCallAgent(ReActAgent):
 
             if self.tool_choices == ToolChoice.REQUIRED and not self.tool_calls:
                 if hasattr(self, 'send_progress_update'):
-                    await self.send_progress_update("No se seleccionaron herramientas, pero se requiere el uso de herramientas")
+                    await self.send_progress_update("__special_status__: Se requieren herramientas")
                 return True  # Will be handled in act()
 
             # For 'auto' mode, continue with content if no commands but content exists
             if self.tool_choices == ToolChoice.AUTO and not self.tool_calls:
                 if hasattr(self, 'send_progress_update') and content:
-                    await self.send_progress_update("No se seleccionaron herramientas, procediendo con la respuesta directa")
+                    await self.send_progress_update("__special_status__: Generando respuesta directa")
                 return bool(content)
 
             return bool(self.tool_calls)
@@ -159,7 +167,7 @@ class ToolCallAgent(ReActAgent):
             logger.error(error_msg)
 
             if hasattr(self, 'send_progress_update'):
-                await self.send_progress_update(f"Error durante el proceso de pensamiento: {str(e)}")
+                await self.send_progress_update("__special_status__: Error en proceso de pensamiento")
 
             self.memory.add_message(
                 Message.assistant_message(
@@ -173,26 +181,27 @@ class ToolCallAgent(ReActAgent):
         if not self.tool_calls:
             if self.tool_choices == ToolChoice.REQUIRED:
                 if hasattr(self, 'send_progress_update'):
-                    await self.send_progress_update("Error: Se requieren llamadas a herramientas pero no se proporcionaron")
+                    await self.send_progress_update("__special_status__: Error: Faltan herramientas requeridas")
                 raise ValueError(TOOL_CALL_REQUIRED)
 
             # Return last message content if no tool calls
             if hasattr(self, 'send_progress_update'):
-                await self.send_progress_update("No hay herramientas que ejecutar, continuando con la respuesta directa")
+                await self.send_progress_update("__special_status__: Generando respuesta")
             return self.messages[-1].content or "No content or commands to execute"
 
         results = []
         total_tools = len(self.tool_calls)
 
         if hasattr(self, 'send_progress_update'):
-            await self.send_progress_update(f"Ejecutando {total_tools} herramienta(s)...")
+            await self.send_progress_update("__special_status__: Iniciando ejecución de herramientas")
 
         for i, command in enumerate(self.tool_calls, 1):
             # Reset base64_image for each tool call
             self._current_base64_image = None
 
             if hasattr(self, 'send_progress_update'):
-                await self.send_progress_update(f"Ejecutando herramienta {i}/{total_tools}: {command.function.name}")
+                if total_tools > 1:
+                    await self.send_progress_update(f"__special_status__: Herramienta {i} de {total_tools}")
 
             result = await self.execute_tool(command)
 
@@ -202,10 +211,6 @@ class ToolCallAgent(ReActAgent):
             logger.info(
                 f"🎯 Tool '{command.function.name}' completed its mission! Result: {result}"
             )
-
-            if hasattr(self, 'send_progress_update'):
-                result_summary = f"Resultado de {command.function.name}: " + (result[:150] + "..." if len(result) > 150 else result)
-                await self.send_progress_update(result_summary)
 
             # Add tool response to memory
             tool_msg = Message.tool_message(
@@ -218,7 +223,7 @@ class ToolCallAgent(ReActAgent):
             results.append(result)
 
         if hasattr(self, 'send_progress_update'):
-            await self.send_progress_update("Todas las herramientas han completado la ejecución")
+            await self.send_progress_update("__special_status__: Evaluando resultados finales")
 
         return "\n\n".join(results)
 
@@ -232,31 +237,62 @@ class ToolCallAgent(ReActAgent):
             return f"Error: Unknown tool '{name}'"
 
         try:
-            # Enviar actualización de progreso sobre la herramienta que se va a usar
+            # Enviar solo actualización de estado sobre la herramienta
             if hasattr(self, 'send_progress_update'):
-                await self.send_progress_update(f"Usando herramienta: {name}")
+                # Enviar actualizaciones de estado más específicas según la herramienta
+                if name == "str_replace_editor":
+                    await self.send_progress_update("__special_status__: Editando archivos...")
+                elif name == "python_execute":
+                    await self.send_progress_update("__special_status__: Ejecutando código Python...")
+                elif name == "browser_use":
+                    await self.send_progress_update("__special_status__: Navegando por la web...")
+                elif name == "create_chat_completion":
+                    await self.send_progress_update("__special_status__: Consultando al LLM para información adicional...")
+                elif name == "terminate":
+                    await self.send_progress_update("__special_status__: Finalizando tarea...")
+                else:
+                    await self.send_progress_update(f"__special_status__: Ejecutando herramienta: {name}...")
 
             # Parse arguments
             args = json.loads(command.function.arguments or "{}")
 
-            # Registrar los argumentos para herramientas importantes
+            # Solo enviar información específica sobre la operación al estado
             if hasattr(self, 'send_progress_update'):
-                arg_summary = ", ".join([f"{k}={v}" for k, v in args.items() if isinstance(v, (str, int, float, bool))])
-                if arg_summary:
-                    await self.send_progress_update(f"Parámetros: {arg_summary[:150]}..." if len(arg_summary) > 150 else f"Parámetros: {arg_summary}")
+                # Información específica según el tipo de herramienta y sus argumentos
+                if name == "str_replace_editor" and "command" in args:
+                    cmd = args.get("command", "")
+                    if cmd == "create":
+                        file_path = args.get("file_path", "")
+                        file_name = os.path.basename(file_path) if file_path else "nuevo archivo"
+                        await self.send_progress_update(f"__special_status__: Creando archivo: {file_name}...")
+                    elif cmd == "edit":
+                        file_path = args.get("file_path", "")
+                        file_name = os.path.basename(file_path) if file_path else "archivo"
+                        await self.send_progress_update(f"__special_status__: Modificando archivo: {file_name}...")
+                    elif cmd == "view":
+                        file_path = args.get("file_path", "")
+                        file_name = os.path.basename(file_path) if file_path else "archivo"
+                        await self.send_progress_update(f"__special_status__: Leyendo archivo: {file_name}...")
+                elif name == "python_execute" and "code" in args:
+                    code = args.get("code", "")
+                    if "import " in code and "os" in code:
+                        await self.send_progress_update("__special_status__: Realizando operaciones del sistema...")
+                    elif "import " in code and any(lib in code for lib in ["matplotlib", "pyplot", "pandas"]):
+                        await self.send_progress_update("__special_status__: Procesando datos o generando gráficos...")
 
             # Execute the tool
             logger.info(f"🔧 Activating tool: '{name}'...")
-
-            # Enviar actualización de inicio de ejecución
-            if hasattr(self, 'send_progress_update'):
-                await self.send_progress_update(f"Ejecutando {name}...")
-
             result = await self.available_tools.execute(name=name, tool_input=args)
 
             # Enviar actualización de finalización
             if hasattr(self, 'send_progress_update'):
-                await self.send_progress_update(f"Completada la ejecución de {name}")
+                await self.send_progress_update("__special_status__: Analizando resultados...")
+
+            # Verificar si la herramienta modificó archivos y actualizar el explorador
+            # Las herramientas que modifican archivos suelen ser str_replace_editor, python_execute, etc.
+            if name in ["str_replace_editor", "python_execute"] and hasattr(self, '_progress_callback'):
+                # Enviar una señal para actualizar el árbol de archivos
+                await self.send_progress_update("__refresh_file_tree__")
 
             # Handle special tools
             await self._handle_special_tool(name=name, result=result)

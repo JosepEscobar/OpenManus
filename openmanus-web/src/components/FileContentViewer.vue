@@ -12,7 +12,9 @@
       </div>
     </div>
     <div class="content-viewer" ref="contentViewer">
-      <pre v-if="content" :class="['code-content', currentFile?.type]">{{ content }}</pre>
+      <div v-if="content" class="code-container">
+        <div v-html="highlightedCode" class="highlighted-code"></div>
+      </div>
       <div v-else class="no-content">
         Select a file to view its content
       </div>
@@ -21,13 +23,122 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, computed } from 'vue'
 import { useWebSocket } from '../composables/useWebSocket'
+import { getHighlighter } from 'shiki'
 
 const currentFile = ref(null)
 const content = ref('')
 const contentViewer = ref(null)
 const { send, onMessage } = useWebSocket()
+const highlighter = ref(null)
+const isHighlighterReady = ref(false)
+
+// Inicializar el highlighter
+onMounted(async () => {
+  try {
+    highlighter.value = await getHighlighter({
+      theme: 'dark-plus', // Tema de VS Code
+      langs: [
+        'javascript', 'typescript', 'jsx', 'tsx', 'html', 'css', 'scss',
+        'json', 'python', 'java', 'php', 'ruby', 'go', 'rust', 'c', 'cpp',
+        'csharp', 'markdown', 'yaml', 'bash', 'sql', 'xml'
+      ],
+    })
+    isHighlighterReady.value = true
+  } catch (e) {
+    console.error('Error al inicializar Shiki:', e)
+  }
+})
+
+// Función para determinar el lenguaje para Shiki
+const getLanguage = () => {
+  if (!currentFile.value) return 'text'
+
+  const extension = currentFile.value.type.toLowerCase()
+  const extensionMap = {
+    'js': 'javascript',
+    'ts': 'typescript',
+    'jsx': 'jsx',
+    'tsx': 'tsx',
+    'py': 'python',
+    'java': 'java',
+    'html': 'html',
+    'htm': 'html',
+    'css': 'css',
+    'scss': 'scss',
+    'less': 'css',
+    'json': 'json',
+    'xml': 'xml',
+    'md': 'markdown',
+    'sh': 'bash',
+    'bash': 'bash',
+    'vue': 'html',
+    'cpp': 'cpp',
+    'cc': 'cpp',
+    'c': 'c',
+    'cs': 'csharp',
+    'go': 'go',
+    'rb': 'ruby',
+    'php': 'php',
+    'rs': 'rust',
+    'swift': 'javascript', // Fallback para Swift
+    'kt': 'java', // Fallback para Kotlin
+    'sql': 'sql',
+    'yaml': 'yaml',
+    'yml': 'yaml'
+  }
+
+  return extensionMap[extension] || 'text'
+}
+
+// Computar el código resaltado
+const highlightedCode = computed(() => {
+  if (!content.value || !isHighlighterReady.value || !highlighter.value) {
+    return `<pre class="plain-text">${escapeHtml(content.value)}</pre>`
+  }
+
+  try {
+    // Primero decodificar cualquier entidad HTML que pueda estar en el contenido
+    const decoded = decodeHtmlEntities(content.value)
+
+    // Aplicar el resaltado de sintaxis
+    const language = getLanguage()
+    return highlighter.value.codeToHtml(decoded, { lang: language })
+  } catch (e) {
+    console.error('Error al resaltar el código:', e)
+    return `<pre class="plain-text">${escapeHtml(content.value)}</pre>`
+  }
+})
+
+// Función para escapar HTML
+function escapeHtml(text) {
+  if (!text) return ''
+
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
+// Función para decodificar entidades HTML
+function decodeHtmlEntities(text) {
+  if (!text) return ''
+
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&#x2F;/g, "/")
+    .replace(/&#x3D;/g, "=")
+    .replace(/&nbsp;/g, " ")
+    .replace(/-&gt;/g, "->") // Para el caso específico de ->
+}
 
 const refreshContent = async () => {
   if (!currentFile.value) return
@@ -68,6 +179,7 @@ onMessage((data) => {
   }
 })
 
+// Observar cambios en el contenido
 watch(content, () => {
   if (contentViewer.value) {
     contentViewer.value.scrollTop = 0
@@ -78,6 +190,38 @@ defineExpose({
   handleFileSelect
 })
 </script>
+
+<style>
+/* Ajustes para la visualización del código */
+.highlighted-code {
+  margin: 0;
+  padding: 0;
+}
+
+.highlighted-code pre {
+  margin: 0;
+  font-family: 'Fira Code', Menlo, Monaco, Consolas, monospace;
+  font-size: 0.7rem !important; /* Tamaño reducido */
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background-color: transparent !important;
+}
+
+.highlighted-code code {
+  font-family: inherit;
+  background-color: transparent !important;
+}
+
+.plain-text {
+  font-family: 'Fira Code', Menlo, Monaco, Consolas, monospace;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  color: #d4d4d4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+</style>
 
 <style scoped>
 .file-content {
@@ -130,15 +274,11 @@ defineExpose({
   flex: 1;
   overflow: auto;
   padding: 1rem;
+  background-color: #1e1e1e; /* Fondo oscuro estilo VSCode */
 }
 
-.code-content {
+.code-container {
   margin: 0;
-  font-family: 'Fira Code', monospace;
-  font-size: 0.9rem;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .no-content {
@@ -150,29 +290,5 @@ defineExpose({
   opacity: 0.5;
   font-style: italic;
 }
-
-/* Syntax highlighting classes */
-.code-content.python {
-  color: #4ec9b0;
-}
-
-.code-content.js {
-  color: #9cdcfe;
-}
-
-.code-content.html {
-  color: #808080;
-}
-
-.code-content.css {
-  color: #ce9178;
-}
-
-.code-content.json {
-  color: #ce9178;
-}
-
-.code-content.md {
-  color: #d4d4d4;
-}
 </style>
+

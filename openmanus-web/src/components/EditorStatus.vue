@@ -1,11 +1,15 @@
 <template>
   <div class="status-container">
-    <div class="status-indicator" :class="status">
-      <div class="status-dot"></div>
-      <span class="status-text">{{ statusText }}</span>
+    <div class="status-row">
+      <div class="status-indicator" :class="status">
+        <div class="status-dot"></div>
+        <span class="status-text">{{ statusText }}</span>
+      </div>
     </div>
-    <div class="current-action" v-if="currentAction">
-      {{ currentAction }}
+    <div class="action-row" v-if="currentAction">
+      <div class="current-action">
+        {{ currentAction }}
+      </div>
     </div>
   </div>
 </template>
@@ -24,7 +28,8 @@ const statusText = computed(() => {
     case 'thinking':
       return 'Thinking...'
     case 'executing':
-      return 'Executing...'
+    case 'working':
+      return 'Working...'
     case 'waiting':
       return 'Waiting for instructions'
     case 'error':
@@ -45,10 +50,22 @@ onMessage((data) => {
 <style scoped>
 .status-container {
   display: flex;
-  align-items: center;
-  padding: 0 1rem;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0.75rem 1rem;
   height: 100%;
   background-color: var(--vscode-secondary);
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.action-row {
+  display: flex;
+  align-items: flex-start;
 }
 
 .status-indicator {
@@ -69,6 +86,7 @@ onMessage((data) => {
   animation: pulse 1.5s infinite;
 }
 
+.status-indicator.working .status-dot,
 .status-indicator.executing .status-dot {
   background-color: var(--vscode-primary);
   animation: pulse 1s infinite;
@@ -78,20 +96,23 @@ onMessage((data) => {
   background-color: var(--vscode-error);
 }
 
-.status-indicator.waiting .status-dot {
+.status-indicator.waiting .status-dot,
+.status-indicator.idle .status-dot {
   background-color: var(--vscode-success);
 }
 
 .status-text {
-  font-size: 0.9rem;
+  font-size: 0.95rem;
+  font-weight: bold;
   color: var(--vscode-fg);
 }
 
 .current-action {
-  margin-left: 2rem;
-  font-size: 0.9rem;
+  font-size: 0.95rem;
   color: var(--vscode-fg);
-  opacity: 0.8;
+  word-wrap: break-word;
+  max-width: 100%;
+  line-height: 1.3;
 }
 
 @keyframes pulse {

@@ -42,7 +42,7 @@ const emit = defineEmits(['fileSelect'])
 
 <style scoped>
 .file-explorer {
-  width: 250px;
+  width: 280px;
   border-right: 1px solid var(--vscode-secondary);
   display: flex;
   flex-direction: column;

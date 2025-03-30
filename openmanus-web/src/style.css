@@ -10,6 +10,38 @@ html {
     padding: 0;
     height: 100%;
     width: 100%;
+    font-size: 14px;
+    /* Base font size reducido en 2 puntos */
+}
+
+/* Ajustes de tamaño de fuente para toda la aplicación */
+button,
+input,
+textarea,
+select,
+p,
+li,
+div {
+    font-size: 0.9rem;
+    /* Tamaño relativo reducido */
+}
+
+h1 {
+    font-size: 1.6rem;
+}
+
+h2 {
+    font-size: 1.4rem;
+}
+
+h3 {
+    font-size: 1.2rem;
+}
+
+h4,
+h5,
+h6 {
+    font-size: 1rem;
 }
 
 /* Font Awesome placeholder styles */

@@ -275,4 +275,20 @@ class Config:
         return PROJECT_ROOT
 
 
+# Número máximo de pasos para el agente Manus
+# Controla cuántos ciclos de pensamiento-acción puede ejecutar antes de terminar
+MAX_STEPS_MANUS = 100
+
+# Número máximo de pasos para agentes basados en navegador
+# Limita cuántas acciones puede realizar un agente mientras navega por la web
+MAX_STEPS_BROWSER = 20
+
+# Número máximo de pasos para agentes con herramientas genéricas
+# Define el límite de iteraciones para agentes que usan múltiples herramientas
+MAX_STEPS_TOOL_AGENT = 100
+
+# Número máximo de pasos para agentes ReAct básicos
+# Establece un límite de seguridad para evitar bucles infinitos en agentes simples
+MAX_STEPS_REACT = 30
+
 config = Config()

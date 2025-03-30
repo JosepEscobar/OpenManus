@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from contextlib import asynccontextmanager
 from typing import List, Optional
+import asyncio
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -41,6 +42,9 @@ class BaseAgent(BaseModel, ABC):
     current_step: int = Field(default=0, description="Current step in execution")
 
     duplicate_threshold: int = 2
+
+    # Progress update callbacks
+    _progress_callback = None
 
     class Config:
         arbitrary_types_allowed = True
@@ -113,6 +117,18 @@ class BaseAgent(BaseModel, ABC):
         kwargs = {"base64_image": base64_image, **(kwargs if role == "tool" else {})}
         self.memory.add_message(message_map[role](content, **kwargs))
 
+    def set_progress_callback(self, callback):
+        """Set the callback function to be called on progress updates."""
+        self._progress_callback = callback
+
+    async def send_progress_update(self, content: str):
+        """Send a progress update message to the client."""
+        if self._progress_callback:
+            await self._progress_callback(content)
+        else:
+            # Si no hay callback, solo registra en el log
+            logger.info(f"Progress update: {content}")
+
     async def run(self, request: Optional[str] = None) -> str:
         """Execute the agent's main loop asynchronously.
 
@@ -130,18 +146,32 @@ class BaseAgent(BaseModel, ABC):
 
         if request:
             self.update_memory("user", request)
+            await self.send_progress_update(f"OpenManus ha recibido la solicitud: {request}")
 
         results: List[str] = []
         async with self.state_context(AgentState.RUNNING):
+            await self.send_progress_update("Iniciando ejecución...")
+
             while (
                 self.current_step < self.max_steps and self.state != AgentState.FINISHED
             ):
                 self.current_step += 1
-                logger.info(f"Executing step {self.current_step}/{self.max_steps}")
+                step_message = f"Ejecutando paso {self.current_step}/{self.max_steps}"
+                logger.info(step_message)
+                await self.send_progress_update(step_message)
+
+                # Ejecutar el paso
                 step_result = await self.step()
+
+                # Enviar actualización sobre el resultado del paso
+                if step_result:
+                    step_summary = f"Resultado del paso {self.current_step}: {step_result[:100]}..." if len(step_result) > 100 else step_result
+                    await self.send_progress_update(step_summary)
 
                 # Check for stuck state
                 if self.is_stuck():
+                    stuck_message = "OpenManus está atascado en un bucle. Intentando nuevas estrategias..."
+                    await self.send_progress_update(stuck_message)
                     self.handle_stuck_state()
 
                 results.append(f"Step {self.current_step}: {step_result}")
@@ -149,8 +179,16 @@ class BaseAgent(BaseModel, ABC):
             if self.current_step >= self.max_steps:
                 self.current_step = 0
                 self.state = AgentState.IDLE
-                results.append(f"Terminated: Reached max steps ({self.max_steps})")
+                max_steps_message = f"Terminado: Se alcanzó el número máximo de pasos ({self.max_steps})"
+                await self.send_progress_update(max_steps_message)
+                results.append(max_steps_message)
+            else:
+                completed_message = "OpenManus ha completado la tarea"
+                await self.send_progress_update(completed_message)
+
         await SANDBOX_CLIENT.cleanup()
+        await self.send_progress_update("Limpieza completada. Listo para nuevas solicitudes.")
+
         return "\n".join(results) if results else "No steps executed"
 
     @abstractmethod

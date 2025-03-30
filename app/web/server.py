@@ -148,6 +148,18 @@ class WebSocketManager:
             # Crear una nueva instancia de Manus para cada solicitud
             agent = Manus()
 
+            # Configurar el callback para enviar actualizaciones de progreso
+            async def progress_callback(message):
+                await self.broadcast({
+                    "type": "chat",
+                    "content": message,
+                    "sender": "assistant",
+                    "timestamp": datetime.now().isoformat()
+                })
+
+            # Establecer el callback en el agente
+            agent.set_progress_callback(progress_callback)
+
             # Registrar el tiempo de inicio para detectar archivos nuevos
             start_time = datetime.now().timestamp()
 
@@ -216,6 +228,60 @@ class WebSocketManager:
             for file_path in files_before_set.intersection(files_after_set):
                 if files_after[file_path]["mtime"] > start_time:
                     modified_files.append(file_path)
+
+            # Enviar actualizaciones sobre archivos modificados
+            if newly_created_files:
+                created_files_paths = [os.path.relpath(p, workspace_path) for p in newly_created_files]
+                if len(created_files_paths) <= 3:
+                    created_files_str = ", ".join(created_files_paths)
+                    await self.broadcast({
+                        "type": "chat",
+                        "content": f"OpenManus ha creado los siguientes archivos: {created_files_str}",
+                        "sender": "assistant",
+                        "timestamp": datetime.now().isoformat()
+                    })
+                else:
+                    await self.broadcast({
+                        "type": "chat",
+                        "content": f"OpenManus ha creado {len(created_files_paths)} archivos nuevos",
+                        "sender": "assistant",
+                        "timestamp": datetime.now().isoformat()
+                    })
+
+            if modified_files:
+                modified_files_paths = [os.path.relpath(p, workspace_path) for p in modified_files]
+                if len(modified_files_paths) <= 3:
+                    modified_files_str = ", ".join(modified_files_paths)
+                    await self.broadcast({
+                        "type": "chat",
+                        "content": f"OpenManus ha modificado los siguientes archivos: {modified_files_str}",
+                        "sender": "assistant",
+                        "timestamp": datetime.now().isoformat()
+                    })
+                else:
+                    await self.broadcast({
+                        "type": "chat",
+                        "content": f"OpenManus ha modificado {len(modified_files_paths)} archivos",
+                        "sender": "assistant",
+                        "timestamp": datetime.now().isoformat()
+                    })
+
+            if renamed_files:
+                renamed_str = ", ".join([f"{os.path.relpath(r['old_path'], workspace_path)} → {os.path.relpath(r['new_path'], workspace_path)}" for r in renamed_files[:3]])
+                if len(renamed_files) <= 3:
+                    await self.broadcast({
+                        "type": "chat",
+                        "content": f"OpenManus ha renombrado los siguientes archivos: {renamed_str}",
+                        "sender": "assistant",
+                        "timestamp": datetime.now().isoformat()
+                    })
+                else:
+                    await self.broadcast({
+                        "type": "chat",
+                        "content": f"OpenManus ha renombrado {len(renamed_files)} archivos",
+                        "sender": "assistant",
+                        "timestamp": datetime.now().isoformat()
+                    })
 
             # Notificar que la solicitud se completó
             await self.broadcast({

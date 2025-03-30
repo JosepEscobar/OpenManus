@@ -1,5 +1,4 @@
 import math
-import asyncio
 from typing import Dict, List, Optional, Union
 
 import tiktoken
@@ -42,6 +41,12 @@ MULTIMODAL_MODELS = [
     "claude-3-haiku-20240307",
 ]
 
+def wait_with_logging(retry_state):
+    """Custom wait function that logs the wait time and attempt number"""
+    wait_time = 60  # Fixed wait time of 60 seconds
+    attempt_number = retry_state.attempt_number
+    logger.error(f"Rate limit hit. Attempt {attempt_number}/6. Waiting {wait_time} seconds before retrying...")
+    return wait_time
 
 class TokenCounter:
     # Token constants
@@ -360,7 +365,7 @@ class LLM:
         return formatted_messages
 
     @retry(
-        wait=wait_random_exponential(min=1, max=60),
+        wait=wait_with_logging,
         stop=stop_after_attempt(6),
         retry=retry_if_exception_type(
             (OpenAIError, Exception, ValueError)
@@ -479,8 +484,6 @@ class LLM:
                 logger.error("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
                 logger.error("Rate limit exceeded. Consider increasing retry attempts.")
-                logger.error("Waiting 30 seconds before retrying...")
-                await asyncio.sleep (30)
             elif isinstance(oe, APIError):
                 logger.error(f"API error: {oe}")
             raise
@@ -489,7 +492,7 @@ class LLM:
             raise
 
     @retry(
-        wait=wait_random_exponential(min=1, max=60),
+        wait=wait_with_logging,
         stop=stop_after_attempt(6),
         retry=retry_if_exception_type(
             (OpenAIError, Exception, ValueError)
@@ -645,7 +648,7 @@ class LLM:
             raise
 
     @retry(
-        wait=wait_random_exponential(min=1, max=60),
+        wait=wait_with_logging,
         stop=stop_after_attempt(6),
         retry=retry_if_exception_type(
             (OpenAIError, Exception, ValueError)
@@ -773,3 +776,4 @@ class LLM:
         except Exception as e:
             logger.error(f"Unexpected error in ask_tool: {e}")
             raise
+

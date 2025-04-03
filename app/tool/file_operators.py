@@ -1,6 +1,7 @@
 """File operation interfaces and implementations for local and sandbox environments."""
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Optional, Protocol, Tuple, Union, runtime_checkable
 
@@ -22,6 +23,10 @@ class FileOperator(Protocol):
 
     async def write_file(self, path: PathLike, content: str) -> None:
         """Write content to a file."""
+        ...
+
+    async def rename_file(self, old_path: PathLike, new_path: PathLike) -> None:
+        """Rename/move a file from old_path to new_path."""
         ...
 
     async def is_directory(self, path: PathLike) -> bool:
@@ -57,6 +62,13 @@ class LocalFileOperator(FileOperator):
             Path(path).write_text(content, encoding=self.encoding)
         except Exception as e:
             raise ToolError(f"Failed to write to {path}: {str(e)}") from None
+
+    async def rename_file(self, old_path: PathLike, new_path: PathLike) -> None:
+        """Rename/move a file from old_path to new_path."""
+        try:
+            Path(old_path).rename(new_path)
+        except Exception as e:
+            raise ToolError(f"Failed to rename {old_path} to {new_path}: {str(e)}") from None
 
     async def is_directory(self, path: PathLike) -> bool:
         """Check if path points to a directory."""
@@ -119,6 +131,14 @@ class SandboxFileOperator(FileOperator):
             await self.sandbox_client.write_file(str(path), content)
         except Exception as e:
             raise ToolError(f"Failed to write to {path} in sandbox: {str(e)}") from None
+
+    async def rename_file(self, old_path: PathLike, new_path: PathLike) -> None:
+        """Rename/move a file from old_path to new_path in sandbox."""
+        await self._ensure_sandbox_initialized()
+        try:
+            await self.sandbox_client.run_command(f"mv {old_path} {new_path}")
+        except Exception as e:
+            raise ToolError(f"Failed to rename {old_path} to {new_path} in sandbox: {str(e)}") from None
 
     async def is_directory(self, path: PathLike) -> bool:
         """Check if path points to a directory in sandbox."""

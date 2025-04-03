@@ -1,7 +1,7 @@
 from pydantic import Field
 
 from app.agent.browser import BrowserAgent
-from app.config import config
+from app.config import config, MAX_STEPS_MANUS
 from app.prompt.browser import NEXT_STEP_PROMPT as BROWSER_NEXT_STEP_PROMPT
 from app.prompt.manus import NEXT_STEP_PROMPT, SYSTEM_PROMPT
 from app.tool import Terminate, ToolCollection
@@ -28,7 +28,7 @@ class Manus(BrowserAgent):
     next_step_prompt: str = NEXT_STEP_PROMPT
 
     max_observe: int = 10000
-    max_steps: int = 20
+    max_steps: int = MAX_STEPS_MANUS
 
     # Add general-purpose tools to the tool collection
     available_tools: ToolCollection = Field(

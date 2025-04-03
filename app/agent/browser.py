@@ -8,6 +8,7 @@ from app.logger import logger
 from app.prompt.browser import NEXT_STEP_PROMPT, SYSTEM_PROMPT
 from app.schema import Message, ToolChoice
 from app.tool import BrowserUseTool, Terminate, ToolCollection
+from app.config import MAX_STEPS_BROWSER
 
 
 class BrowserAgent(ToolCallAgent):
@@ -25,7 +26,7 @@ class BrowserAgent(ToolCallAgent):
     next_step_prompt: str = NEXT_STEP_PROMPT
 
     max_observe: int = 10000
-    max_steps: int = 20
+    max_steps: int = MAX_STEPS_BROWSER
 
     # Configure the available tools
     available_tools: ToolCollection = Field(

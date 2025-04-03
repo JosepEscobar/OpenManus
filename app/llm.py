@@ -1,5 +1,5 @@
 import math
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Any
 
 import tiktoken
 from openai import (
@@ -43,9 +43,28 @@ MULTIMODAL_MODELS = [
 
 def wait_with_logging(retry_state):
     """Custom wait function that logs the wait time and attempt number"""
-    wait_time = 60  # Fixed wait time of 60 seconds
-    attempt_number = retry_state.attempt_number
-    logger.error(f"Rate limit hit. Attempt {attempt_number}/6. Waiting {wait_time} seconds before retrying...")
+    exception = retry_state.outcome.exception()
+
+    # Verificar el tipo de error para ajustar el tiempo de espera
+    if hasattr(exception, 'status_code') and exception.status_code == 429:
+        # Error de rate limit
+        wait_time = 60  # Esperar 60 segundos para errores de rate limit
+        logger.error(f"Rate limit hit (429). Attempt {retry_state.attempt_number}/6. Waiting {wait_time} seconds before retrying...")
+    elif hasattr(exception, 'status_code') and exception.status_code == 400:
+        # Errores 400 como 'tool_call_id not found'
+        if "tool_call_id" in str(exception):
+            # No esperar mucho para estos errores, ya que sólo necesitamos resetear el contexto
+            wait_time = 2
+            logger.error(f"Tool call ID error (400). Attempt {retry_state.attempt_number}/6. Waiting {wait_time} seconds before retrying with clean context...")
+        else:
+            # Otros errores 400
+            wait_time = 10
+            logger.error(f"Bad request error (400). Attempt {retry_state.attempt_number}/6. Waiting {wait_time} seconds before retrying...")
+    else:
+        # Otros tipos de errores
+        wait_time = 30  # Tiempo de espera más corto para otros errores
+        logger.error(f"API error: {exception}. Attempt {retry_state.attempt_number}/6. Waiting {wait_time} seconds before retrying...")
+
     return wait_time
 
 class TokenCounter:
@@ -373,123 +392,239 @@ class LLM:
     )
     async def ask(
         self,
-        messages: List[Union[dict, Message]],
-        system_msgs: Optional[List[Union[dict, Message]]] = None,
-        stream: bool = True,
+        messages: List[Union[Dict[str, Any], Message]],
+        functions: Optional[List[Dict[str, Any]]] = None,
+        function_call: Optional[Union[str, Dict[str, str]]] = None,
+        model_overwrite: Optional[str] = None,
         temperature: Optional[float] = None,
-    ) -> str:
+        max_tokens: Optional[int] = None,
+        response_format: Optional[Dict[str, Any]] = None,
+    ) -> Union[str, Dict[str, Any], List[Dict[str, Any]]]:
         """
-        Send a prompt to the LLM and get the response.
+        Send a request to OpenAI's chat endpoint and get the response.
 
         Args:
-            messages: List of conversation messages
-            system_msgs: Optional system messages to prepend
-            stream (bool): Whether to stream the response
-            temperature (float): Sampling temperature for the response
+            messages: List of message objects or dictionary messages objects
+            functions: Optional list of functions to expose to the model
+            function_call: Optional function call specification
+            model_overwrite: Use a specific model instead of the configured one
+            temperature: Model temperature
+            max_tokens: Maximum tokens to generate
+            response_format: Optional response format object
 
         Returns:
-            str: The generated response
+            Generated response or list of function calls if applicable
 
         Raises:
-            TokenLimitExceeded: If token limits are exceeded
-            ValueError: If messages are invalid or response is empty
-            OpenAIError: If API call fails after retries
-            Exception: For unexpected errors
+            OpenAIError: If there is any issue with the OpenAI API request
+            Exception: For other unexpected errors
         """
-        try:
-            # Check if the model supports images
-            supports_images = self.model in MULTIMODAL_MODELS
+        # Track token usage
+        function_tokens = 0
+        if functions:
+            function_tokens = self.count_tokens(str(functions))
+            logger.debug(f"Function tokens: {function_tokens}")
 
-            # Format system and user messages with image support check
-            if system_msgs:
-                system_msgs = self.format_messages(system_msgs, supports_images)
-                messages = system_msgs + self.format_messages(messages, supports_images)
+        # Clean up messages for proper formatting
+        for message in messages:
+            if isinstance(message, dict) and "base64_image" in message:
+                message.pop("base64_image", None)
+
+        # Convert Messages to dictionaries if needed
+        messages_dicts = []
+        for message in messages:
+            if isinstance(message, Message):
+                message_dict = message.to_dict()
             else:
-                messages = self.format_messages(messages, supports_images)
+                message_dict = message
+            messages_dicts.append(message_dict)
 
-            # Calculate input token count
-            input_tokens = self.count_message_tokens(messages)
+        if not messages_dicts:
+            error_msg = "No valid messages provided"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
 
-            # Check if token limits are exceeded
-            if not self.check_token_limit(input_tokens):
-                error_message = self.get_limit_error_message(input_tokens)
-                # Raise a special exception that won't be retried
-                raise TokenLimitExceeded(error_message)
+        # Avoid passing empty content which causes API errors
+        for message in messages_dicts:
+            if isinstance(message.get("content", ""), list) and not message["content"]:
+                # Convert empty content list to empty string
+                message["content"] = ""
+            elif message.get("content", "") == "":
+                if self.api_type == "azure" and self.api_version == "2024-03-13":
+                    # Leave empty content in OpenAI v1
+                    pass
+                else:
+                    # Fix for empty content in earlier versions
+                    message["content"] = " "
 
-            params = {
-                "model": self.model,
-                "messages": messages,
-            }
+        # Prepare API request
+        start_time = time.time()
 
-            if self.model in REASONING_MODELS:
-                params["max_completion_tokens"] = self.max_tokens
+        # Prepare request arguments
+        kwargs = {
+            "messages": messages_dicts,
+            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
+            "temperature": temperature if temperature is not None else self.temperature,
+            "model": model_overwrite if model_overwrite else self.model,
+        }
+
+        # Add functions if provided (with OpenAI client version specific handling)
+        if functions:
+            if (self.api_type == "azure" and self.api_version == "2024-03-13"
+                or (
+                    self.api_type == "openai" and "gpt-4" in kwargs["model"]
+                )
+            ):
+                # For OpenAI v1 and v0 with gpt-4
+                tools = [{"type": "function", "function": f} for f in functions]
+                kwargs["tools"] = tools
+                if function_call and isinstance(function_call, dict):
+                    kwargs["tool_choice"] = {
+                        "type": "function",
+                        "function": {"name": function_call.get("name", "auto")},
+                    }
+                elif function_call:
+                    kwargs["tool_choice"] = function_call
             else:
-                params["max_tokens"] = self.max_tokens
-                params["temperature"] = (
-                    temperature if temperature is not None else self.temperature
+                # For older OpenAI client versions (prior to tools)
+                kwargs["functions"] = functions
+                if function_call:
+                    kwargs["function_call"] = function_call
+
+        # Add response format if provided
+        if response_format and self.api_type == "azure" and self.api_version == "2024-03-13":
+            kwargs["response_format"] = response_format
+
+        # Run the API call with retries and error handling
+        retry_count = 0
+        max_retries = 3
+        retry_delay = 2  # Segundos iniciales de espera
+
+        while retry_count <= max_retries:
+            try:
+                # Log the request details
+                logger.debug(f"Requesting completion with {len(messages_dicts)} messages and {len(functions) if functions else 0} functions")
+
+                response = await self.client.chat.completions.create(**kwargs)
+
+                # Process and return the response
+                completion_time = time.time() - start_time
+
+                # Log detailed response info
+                if hasattr(response, 'usage') and response.usage:
+                    prompt_tokens = getattr(response.usage, 'prompt_tokens', 0)
+                    completion_tokens = getattr(response.usage, 'completion_tokens', 0)
+                    total_tokens = getattr(response.usage, 'total_tokens', 0)
+
+                    logger.info(
+                        f"API response in {completion_time:.2f}s. "
+                        f"Tokens: {prompt_tokens} prompt, {completion_tokens} completion, {total_tokens} total"
+                    )
+                else:
+                    logger.info(f"API response received in {completion_time:.2f}s (no token usage info)")
+
+                # Extract the relevant response content
+                if hasattr(response, 'choices') and response.choices:
+                    choice = response.choices[0]
+                    finish_reason = getattr(choice, 'finish_reason', None)
+
+                    if finish_reason == "tool_calls" or finish_reason == "function_call":
+                        # Return function calls
+                        if hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
+                            tool_calls = choice.message.tool_calls
+                            logger.info(f"Returning {len(tool_calls)} tool calls")
+                            return tool_calls
+
+                        if hasattr(choice.message, 'function_call') and choice.message.function_call:
+                            func_call = choice.message.function_call
+                            logger.info(f"Returning function call to {func_call.name}")
+                            return func_call
+
+                    # Return normal content
+                    if hasattr(choice.message, 'content'):
+                        content = choice.message.content
+                        if content:
+                            return content
+                        else:
+                            logger.warning("Model returned empty content")
+                            return ""
+
+                # Fallback if we can't find the expected content
+                logger.warning("Couldn't extract expected content from response")
+                return str(response)
+
+            except (RateLimitError, ServiceUnavailableError, APITimeoutError) as e:
+                # Errores que deberían reintentarse con backoff
+                retry_count += 1
+                wait_time = retry_delay * (2 ** (retry_count - 1))  # Backoff exponencial
+
+                logger.warning(
+                    f"API error (intento {retry_count}/{max_retries}): {str(e)}. "
+                    f"Reintentando en {wait_time} segundos..."
                 )
 
-            if not stream:
-                # Non-streaming request
-                response = await self.client.chat.completions.create(
-                    **params, stream=False
-                )
+                if retry_count <= max_retries:
+                    if self._progress_callback:
+                        await self._progress_callback(
+                            f"Error temporal de API: {str(e)}. Reintentando en {wait_time}s..."
+                        )
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"Error persistente después de {max_retries} intentos: {str(e)}")
+                    if self._progress_callback:
+                        await self._progress_callback(
+                            f"Error de API después de {max_retries} intentos: {str(e)}"
+                        )
+                    raise
 
-                if not response.choices or not response.choices[0].message.content:
-                    raise ValueError("Empty or invalid response from LLM")
+            except APIError as e:
+                # Errores de API que pueden ser recuperables en algunos casos
+                error_message = str(e)
 
-                # Update token counts
-                self.update_token_count(
-                    response.usage.prompt_tokens, response.usage.completion_tokens
-                )
+                # Verificar si es un error recuperable
+                if any(recoverable in error_message.lower() for recoverable in
+                      ["timeout", "overloaded", "capacity", "temporarily unavailable"]):
+                    retry_count += 1
+                    wait_time = retry_delay * (2 ** (retry_count - 1))
 
-                return response.choices[0].message.content
+                    logger.warning(
+                        f"Error recuperable (intento {retry_count}/{max_retries}): {error_message}. "
+                        f"Reintentando en {wait_time} segundos..."
+                    )
 
-            # Streaming request, For streaming, update estimated token count before making the request
-            self.update_token_count(input_tokens)
+                    if retry_count <= max_retries:
+                        if self._progress_callback:
+                            await self._progress_callback(
+                                f"Error recuperable: {error_message}. Reintentando en {wait_time}s..."
+                            )
+                        await asyncio.sleep(wait_time)
+                    else:
+                        logger.error(f"Error persistente después de {max_retries} intentos: {error_message}")
+                        if self._progress_callback:
+                            await self._progress_callback(
+                                f"Error de API después de {max_retries} intentos: {error_message}"
+                            )
+                        raise
+                else:
+                    # Error no recuperable
+                    logger.error(f"Error de API no recuperable: {error_message}")
+                    if self._progress_callback:
+                        await self._progress_callback(f"Error de API: {error_message}")
+                    raise
 
-            response = await self.client.chat.completions.create(**params, stream=True)
+            except Exception as e:
+                # Otros errores inesperados
+                error_message = f"Error inesperado: {str(e)}"
+                logger.error(error_message)
 
-            collected_messages = []
-            completion_text = ""
-            async for chunk in response:
-                chunk_message = chunk.choices[0].delta.content or ""
-                collected_messages.append(chunk_message)
-                completion_text += chunk_message
-                print(chunk_message, end="", flush=True)
+                # Registrar el traceback completo
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
 
-            print()  # Newline after streaming
-            full_response = "".join(collected_messages).strip()
-            if not full_response:
-                raise ValueError("Empty response from streaming LLM")
+                if self._progress_callback:
+                    await self._progress_callback(f"Error: {error_message}")
 
-            # estimate completion tokens for streaming response
-            completion_tokens = self.count_tokens(completion_text)
-            logger.info(
-                f"Estimated completion tokens for streaming response: {completion_tokens}"
-            )
-            self.total_completion_tokens += completion_tokens
-
-            return full_response
-
-        except TokenLimitExceeded:
-            # Re-raise token limit errors without logging
-            raise
-        except ValueError:
-            logger.exception(f"Validation error")
-            raise
-        except OpenAIError as oe:
-            logger.exception(f"OpenAI API error")
-            if isinstance(oe, AuthenticationError):
-                logger.error("Authentication failed. Check API key.")
-            elif isinstance(oe, RateLimitError):
-                logger.error("Rate limit exceeded. Consider increasing retry attempts.")
-            elif isinstance(oe, APIError):
-                logger.error(f"API error: {oe}")
-            raise
-        except Exception:
-            logger.exception(f"Unexpected error in ask")
-            raise
+                raise
 
     @retry(
         wait=wait_with_logging,
@@ -605,11 +740,20 @@ class LLM:
             if not stream:
                 response = await self.client.chat.completions.create(**params)
 
-                if not response.choices or not response.choices[0].message.content:
-                    raise ValueError("Empty or invalid response from LLM")
+                # Mejor validación de la respuesta
+                if not response or not hasattr(response, 'choices') or not response.choices:
+                    raise ValueError("Respuesta vacía o inválida del LLM en ask_with_images (sin choices)")
+
+                choice = response.choices[0]
+                if not hasattr(choice, 'message') or not choice.message:
+                    raise ValueError("Respuesta del LLM en ask_with_images sin mensaje")
+
+                content = getattr(choice.message, 'content', None)
+                if not content:
+                    raise ValueError("Respuesta del LLM en ask_with_images con contenido vacío")
 
                 self.update_token_count(response.usage.prompt_tokens)
-                return response.choices[0].message.content
+                return content
 
             # Handle streaming request
             self.update_token_count(input_tokens)
@@ -617,7 +761,20 @@ class LLM:
 
             collected_messages = []
             async for chunk in response:
-                chunk_message = chunk.choices[0].delta.content or ""
+                # Verificar que chunk.choices exista y tenga elementos antes de acceder
+                if chunk is None or not hasattr(chunk, 'choices') or not chunk.choices:
+                    logger.warning(f"[LLM] Recibido chunk sin choices en ask_with_images: {chunk}")
+                    continue
+
+                # Verificar que el delta y el content existan
+                delta = getattr(chunk.choices[0], 'delta', None)
+                if delta is None:
+                    logger.warning(f"[LLM] Recibido choice sin delta en ask_with_images: {chunk.choices[0]}")
+                    continue
+
+                # Obtener el contenido del delta con manejo de None
+                chunk_message = getattr(delta, 'content', "") or ""
+
                 collected_messages.append(chunk_message)
                 print(chunk_message, end="", flush=True)
 
@@ -745,18 +902,27 @@ class LLM:
                 **params, stream=False
             )
 
-            # Check if response is valid
-            if not response.choices or not response.choices[0].message:
-                print(response)
-                # raise ValueError("Invalid or empty response from LLM")
+            # Mejor validación de la respuesta
+            if not response or not hasattr(response, 'choices') or not response.choices:
+                logger.warning(f"[LLM] Respuesta vacía o inválida en ask_tool: {response}")
+                return None
+
+            choice = response.choices[0]
+            if not hasattr(choice, 'message') or not choice.message:
+                logger.warning(f"[LLM] Respuesta sin mensaje en ask_tool: {choice}")
                 return None
 
             # Update token counts
-            self.update_token_count(
-                response.usage.prompt_tokens, response.usage.completion_tokens
-            )
+            if hasattr(response, 'usage'):
+                prompt_tokens = getattr(response.usage, 'prompt_tokens', 0)
+                completion_tokens = getattr(response.usage, 'completion_tokens', 0)
+                self.update_token_count(prompt_tokens, completion_tokens)
+            else:
+                # Si no hay información de uso, usar estimaciones
+                logger.warning(f"[LLM] No hay información de uso de tokens en ask_tool")
+                self.update_token_count(input_tokens)
 
-            return response.choices[0].message
+            return choice.message
 
         except TokenLimitExceeded:
             # Re-raise token limit errors without logging

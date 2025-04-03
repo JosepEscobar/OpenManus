@@ -24,7 +24,7 @@
       <div class="input-wrapper">
         <textarea
           v-model="inputMessage"
-          :placeholder="isFirstMessage ? 'Escribe tu tarea para OpenManus (se añadirán instrucciones)...' : 'Escribe un mensaje para OpenManus...'"
+          placeholder="Escribe tu tarea para OpenManus..."
           @keydown="handleKeyDown"
           @input="adjustTextareaHeight"
           ref="inputTextarea"
@@ -53,9 +53,6 @@ const inputMessage = ref('')
 const messagesContainer = ref(null)
 const inputTextarea = ref(null)
 const { send, onMessage, isConnected } = useWebSocket()
-
-// Variables para rastrear si es el primer mensaje
-const isFirstMessage = ref(true)
 
 // Formatear la marca de tiempo para mostrarla amigablemente
 const formatTimestamp = (timestamp) => {
@@ -103,25 +100,12 @@ const sendMessage = async () => {
   const userContent = inputMessage.value.trim()
   let messageContent = userContent
 
-  // Si es el primer mensaje del usuario, añadir las instrucciones adicionales
-  if (isFirstMessage.value) {
-    messageContent = `${userContent}
-
-Crea un TODO.md con un desglose de tareas que tienes que hacer para llevar a cabo la tarea que te acabo de encomendar. el todo va a tener el formato: [ ] Tarea por completar, [x] Tarea completa
-
-Ejecuta el plan por orden del todo, al terminar cada tarea marcala como hecha.
-
-Para marcar como terminada una tarea, tienes que haberla desarrollado y probado.
-
-No mokees datos si no es extrictamente necesario, si tienes que mockear algo por dependencias externas, documentalo en el README.md.`
-
-    // Ya no es el primer mensaje
-    isFirstMessage.value = false
-  }
+  // Ya no agregamos instrucciones adicionales al primer mensaje
+  // porque ahora esto lo maneja el CoordinatorAgent
 
   const message = {
     type: 'chat',
-    content: userContent, // Mostrar al usuario solo su mensaje original
+    content: userContent,
     sender: 'user',
     timestamp: new Date().toISOString()
   }
@@ -134,10 +118,10 @@ No mokees datos si no es extrictamente necesario, si tienes que mockear algo por
   adjustTextareaHeight()
 
   try {
-    // Enviar el mensaje modificado al servidor WebSocket
+    // Enviar el mensaje al servidor WebSocket sin modificaciones
     await send({
       type: 'chat',
-      content: messageContent, // Enviar el contenido posiblemente modificado
+      content: messageContent,
       sender: 'user',
       timestamp: new Date().toISOString()
     })
@@ -149,11 +133,6 @@ No mokees datos si no es extrictamente necesario, si tienes que mockear algo por
       timestamp: new Date().toISOString()
     })
     scrollToBottom()
-
-    // Restablecer isFirstMessage en caso de error
-    if (isFirstMessage.value === false && messages.value.filter(m => m.sender === 'user').length <= 1) {
-      isFirstMessage.value = true
-    }
   }
 }
 
@@ -177,21 +156,13 @@ onMessage((data) => {
   }
 })
 
-// Inicializar isFirstMessage basado en los mensajes existentes
-const updateIsFirstMessage = () => {
-  // Si hay mensajes del usuario, no es el primer mensaje
-  isFirstMessage.value = !messages.value.some(msg => msg.sender === 'user')
-}
-
-// Observar cambios en los mensajes para actualizar isFirstMessage
+// Observar cambios en los mensajes
 watch(messages, () => {
   scrollToBottom()
-  updateIsFirstMessage()
 })
 
 onMounted(() => {
   scrollToBottom()
-  updateIsFirstMessage()
 
   // Agregar un mensaje de bienvenida
   setTimeout(() => {
@@ -200,7 +171,6 @@ onMounted(() => {
       sender: 'assistant',
       timestamp: new Date().toISOString()
     })
-    updateIsFirstMessage()
   }, 1000)
 })
 
@@ -211,9 +181,6 @@ const clearChat = () => {
     msg.sender === 'assistant' &&
     msg.content === '¡Hola! Soy OpenManus. ¿En qué puedo ayudarte hoy?'
   )
-
-  // Resetear el estado para que el próximo mensaje sea considerado el primero
-  isFirstMessage.value = true
 
   // Scroll al final para mostrar el mensaje de bienvenida
   scrollToBottom()

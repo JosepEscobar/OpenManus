@@ -13,7 +13,7 @@
     </div>
     <div class="content-viewer" ref="contentViewer">
       <div v-if="content" class="code-container">
-        <div v-html="highlightedCode" class="highlighted-code"></div>
+        <pre v-html="highlightedCode" class="code-content"></pre>
       </div>
       <div v-else class="no-content">
         Select a file to view its content
@@ -25,93 +25,109 @@
 <script setup>
 import { ref, onMounted, watch, computed } from 'vue'
 import { useWebSocket } from '../composables/useWebSocket'
-import { getHighlighter } from 'shiki'
+import Prism from 'prismjs'
 
+// Importar el tema - elegimos uno similar a GitHub
+import 'prismjs/themes/prism-okaidia.css'
+
+// Importar los idiomas necesarios
+import 'prismjs/components/prism-markup'
+import 'prismjs/components/prism-css'
+import 'prismjs/components/prism-javascript'
+import 'prismjs/components/prism-typescript'
+import 'prismjs/components/prism-jsx'
+import 'prismjs/components/prism-tsx'
+import 'prismjs/components/prism-python'
+import 'prismjs/components/prism-java'
+import 'prismjs/components/prism-bash'
+import 'prismjs/components/prism-c'
+import 'prismjs/components/prism-cpp'
+import 'prismjs/components/prism-csharp'
+import 'prismjs/components/prism-go'
+import 'prismjs/components/prism-json'
+import 'prismjs/components/prism-markdown'
+import 'prismjs/components/prism-ruby'
+import 'prismjs/components/prism-yaml'
+import 'prismjs/components/prism-sql'
+import 'prismjs/components/prism-rust'
+import 'prismjs/components/prism-scss'
+import 'prismjs/components/prism-php'
+
+// Plugins para mejorar la visualización
+import 'prismjs/plugins/line-numbers/prism-line-numbers'
+import 'prismjs/plugins/line-numbers/prism-line-numbers.css'
+
+// Definir variables reactivas
 const currentFile = ref(null)
 const content = ref('')
 const contentViewer = ref(null)
 const { send, onMessage } = useWebSocket()
-const highlighter = ref(null)
-const isHighlighterReady = ref(false)
 
-// Inicializar el highlighter
-onMounted(async () => {
-  try {
-    highlighter.value = await getHighlighter({
-      theme: 'dark-plus', // Tema de VS Code
-      langs: [
-        'javascript', 'typescript', 'jsx', 'tsx', 'html', 'css', 'scss',
-        'json', 'python', 'java', 'php', 'ruby', 'go', 'rust', 'c', 'cpp',
-        'csharp', 'markdown', 'yaml', 'bash', 'sql', 'xml'
-      ],
-    })
-    isHighlighterReady.value = true
-  } catch (e) {
-    console.error('Error al inicializar Shiki:', e)
-  }
-})
-
-// Función para determinar el lenguaje para Shiki
-const getLanguage = () => {
-  if (!currentFile.value) return 'text'
-
-  const extension = currentFile.value.type.toLowerCase()
-  const extensionMap = {
-    'js': 'javascript',
-    'ts': 'typescript',
-    'jsx': 'jsx',
-    'tsx': 'tsx',
-    'py': 'python',
-    'java': 'java',
-    'html': 'html',
-    'htm': 'html',
-    'css': 'css',
-    'scss': 'scss',
-    'less': 'css',
-    'json': 'json',
-    'xml': 'xml',
-    'md': 'markdown',
-    'sh': 'bash',
-    'bash': 'bash',
-    'vue': 'html',
-    'cpp': 'cpp',
-    'cc': 'cpp',
-    'c': 'c',
-    'cs': 'csharp',
-    'go': 'go',
-    'rb': 'ruby',
-    'php': 'php',
-    'rs': 'rust',
-    'swift': 'javascript', // Fallback para Swift
-    'kt': 'java', // Fallback para Kotlin
-    'sql': 'sql',
-    'yaml': 'yaml',
-    'yml': 'yaml'
-  }
-
-  return extensionMap[extension] || 'text'
+// Mapa de extensiones de archivo a lenguajes de Prism.js
+const languageMap = {
+  'js': 'javascript',
+  'jsx': 'jsx',
+  'ts': 'typescript',
+  'tsx': 'tsx',
+  'py': 'python',
+  'java': 'java',
+  'html': 'html',
+  'htm': 'html',
+  'xml': 'xml',
+  'css': 'css',
+  'scss': 'scss',
+  'less': 'css',
+  'json': 'json',
+  'md': 'markdown',
+  'markdown': 'markdown',
+  'sh': 'bash',
+  'bash': 'bash',
+  'zsh': 'bash',
+  'c': 'c',
+  'h': 'c',
+  'cpp': 'cpp',
+  'cc': 'cpp',
+  'hpp': 'cpp',
+  'cs': 'csharp',
+  'go': 'go',
+  'rb': 'ruby',
+  'rs': 'rust',
+  'php': 'php',
+  'sql': 'sql',
+  'yaml': 'yaml',
+  'yml': 'yaml',
+  'vue': 'markup',
+  'txt': 'text',
+  'gitignore': 'text',
+  'dockerfile': 'docker',
+  'env': 'text'
 }
 
-// Computar el código resaltado
-const highlightedCode = computed(() => {
-  if (!content.value || !isHighlighterReady.value || !highlighter.value) {
-    return `<pre class="plain-text">${escapeHtml(content.value)}</pre>`
+// Obtener el lenguaje basado en la extensión del archivo
+const getLanguage = (filename) => {
+  if (!filename) return 'text'
+
+  // Extraer la extensión o usar el nombre de archivo para ciertos tipos
+  let extension = ''
+  if (filename.includes('.')) {
+    extension = filename.split('.').pop().toLowerCase()
+  } else {
+    extension = filename.toLowerCase() // Para archivos sin extensión como Dockerfile o .gitignore
   }
 
-  try {
-    // Primero decodificar cualquier entidad HTML que pueda estar en el contenido
-    const decoded = decodeHtmlEntities(content.value)
+  return languageMap[extension] || 'text'
+}
 
-    // Aplicar el resaltado de sintaxis
-    const language = getLanguage()
-    return highlighter.value.codeToHtml(decoded, { lang: language })
-  } catch (e) {
-    console.error('Error al resaltar el código:', e)
-    return `<pre class="plain-text">${escapeHtml(content.value)}</pre>`
-  }
-})
+// Función para decodificar entidades HTML
+function decodeHtmlEntities(text) {
+  if (!text) return ''
 
-// Función para escapar HTML
+  const textarea = document.createElement('textarea')
+  textarea.innerHTML = text
+  return textarea.value
+}
+
+// Función para escapar HTML para mostrar seguramente
 function escapeHtml(text) {
   if (!text) return ''
 
@@ -123,23 +139,42 @@ function escapeHtml(text) {
     .replace(/'/g, '&#039;')
 }
 
-// Función para decodificar entidades HTML
-function decodeHtmlEntities(text) {
-  if (!text) return ''
+// Código resaltado computado
+const highlightedCode = computed(() => {
+  if (!content.value) return ''
 
-  return text
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&apos;/g, "'")
-    .replace(/&#x2F;/g, "/")
-    .replace(/&#x3D;/g, "=")
-    .replace(/&nbsp;/g, " ")
-    .replace(/-&gt;/g, "->") // Para el caso específico de ->
-}
+  try {
+    // Decodificar cualquier entidad HTML primero
+    const decodedContent = decodeHtmlEntities(content.value)
 
+    // Obtener el lenguaje basado en el archivo actual
+    const language = currentFile.value
+      ? getLanguage(currentFile.value.name)
+      : 'text'
+
+    // Verificar si Prism soporta el lenguaje
+    if (Prism.languages[language]) {
+      // Aplicar resaltado usando Prism
+      const highlighted = Prism.highlight(
+        decodedContent,
+        Prism.languages[language],
+        language
+      )
+
+      // Retornar el código resaltado dentro de una etiqueta <code> con la clase correcta
+      return `<code class="language-${language} line-numbers">${highlighted}</code>`
+    } else {
+      // Fallback para lenguajes no soportados
+      return `<code class="language-text">${escapeHtml(decodedContent)}</code>`
+    }
+  } catch (e) {
+    console.error('Error al aplicar Prism:', e)
+    // Fallback en caso de error
+    return `<code class="language-text">${escapeHtml(content.value)}</code>`
+  }
+})
+
+// Refrescar el contenido del archivo
 const refreshContent = async () => {
   if (!currentFile.value) return
 
@@ -153,6 +188,7 @@ const refreshContent = async () => {
   }
 }
 
+// Manejar la selección de archivo
 const handleFileSelect = (filePath) => {
   currentFile.value = {
     path: filePath,
@@ -186,40 +222,53 @@ watch(content, () => {
   }
 })
 
+// Después de que el componente se monta, inicializar Prism
+onMounted(() => {
+  // No es necesario inicializar Prism aquí, ya que usamos la función highlight directamente
+})
+
+// Exponer el método handleFileSelect para ser usado por el componente padre
 defineExpose({
   handleFileSelect
 })
 </script>
 
 <style>
-/* Ajustes para la visualización del código */
-.highlighted-code {
+/* Estilos globales para Prism */
+pre[class*="language-"] {
   margin: 0;
-  padding: 0;
-}
-
-.highlighted-code pre {
-  margin: 0;
-  font-family: 'Fira Code', Menlo, Monaco, Consolas, monospace;
-  font-size: 0.7rem !important; /* Tamaño reducido */
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-  background-color: transparent !important;
-}
-
-.highlighted-code code {
-  font-family: inherit;
-  background-color: transparent !important;
-}
-
-.plain-text {
-  font-family: 'Fira Code', Menlo, Monaco, Consolas, monospace;
+  border-radius: 4px;
+  background: #1e1e1e !important;
+  font-family: 'Fira Code', Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace;
   font-size: 0.7rem;
-  line-height: 1.5;
-  color: #d4d4d4;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+code[class*="language-"] {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  background: transparent !important;
+}
+
+/* Mejoras específicas para operadores (como ->) para que se vean bien en Python */
+.token.operator {
+  background: transparent !important;
+}
+
+/* Mejorar la legibilidad de comentarios */
+.token.comment {
+  color: #6A9955;
+}
+
+/* Estilos para números de línea (opcional) */
+.line-numbers .line-numbers-rows {
+  border-right: 1px solid #404040;
+}
+
+.line-numbers-rows > span:before {
+  color: #858585;
 }
 </style>
 
@@ -278,7 +327,15 @@ defineExpose({
 }
 
 .code-container {
+  width: 100%;
+  height: 100%;
+}
+
+.code-content {
   margin: 0;
+  padding: 1em;
+  width: 100%;
+  background-color: transparent;
 }
 
 .no-content {

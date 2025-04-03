@@ -48,6 +48,9 @@ class ToolCallAgent(ReActAgent):
                 await self.send_progress_update("__special_status__: Analizando contexto actual...")
 
         try:
+            # Limpiar mensajes para evitar references a tool_calls huérfanos
+            self._clean_orphaned_tool_calls()
+
             # Get response with tool options
             if hasattr(self, 'send_progress_update'):
                 await self.send_progress_update("__special_status__: Consultando al modelo de lenguaje...")
@@ -356,3 +359,54 @@ class ToolCallAgent(ReActAgent):
     def _is_special_tool(self, name: str) -> bool:
         """Check if tool name is in special tools list"""
         return name.lower() in [n.lower() for n in self.special_tool_names]
+
+    def _clean_orphaned_tool_calls(self):
+        """Limpia las referencias a tool_calls huérfanos para evitar errores de 'tool_call_id not found'"""
+        logger.info(f"Limpiando posibles tool_calls huérfanos del historial de mensajes")
+
+        # Identificar todos los tool_call_ids presentes en el historial
+        tool_call_ids = set()
+        assistant_tool_call_ids = {}
+
+        # Primero, identificar todos los tool_call_ids usados por asistentes
+        for i, msg in enumerate(self.messages):
+            if hasattr(msg, "role") and msg.role == "assistant" and hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tool_call in msg.tool_calls:
+                    if hasattr(tool_call, "id"):
+                        assistant_tool_call_ids[tool_call.id] = i
+
+        # Luego, identificar los tool_call_ids que tienen respuestas de herramientas
+        for msg in self.messages:
+            if hasattr(msg, "role") and msg.role == "tool" and hasattr(msg, "tool_call_id"):
+                tool_call_ids.add(msg.tool_call_id)
+
+        # Encontrar tool_calls huérfanos (sin respuesta de herramienta correspondiente)
+        orphaned_tool_call_ids = set()
+        for tool_id, msg_index in assistant_tool_call_ids.items():
+            if tool_id not in tool_call_ids:
+                orphaned_tool_call_ids.add((tool_id, msg_index))
+
+        if orphaned_tool_call_ids:
+            logger.warning(f"Encontrados {len(orphaned_tool_call_ids)} tool_calls huérfanos que serán limpiados")
+
+            # Limpiar mensajes con tool_calls huérfanos
+            clean_messages = []
+            for i, msg in enumerate(self.messages):
+                if hasattr(msg, "role") and msg.role == "assistant" and hasattr(msg, "tool_calls") and msg.tool_calls:
+                    # Verificar si este mensaje contiene tool_calls huérfanos
+                    has_orphaned = any((tool_call.id, i) in orphaned_tool_call_ids for tool_call in msg.tool_calls if hasattr(tool_call, "id"))
+
+                    if has_orphaned:
+                        # Solo conservar el contenido de texto sin tool_calls
+                        content = getattr(msg, "content", "") or ""
+                        clean_messages.append(Message.assistant_message(content))
+                        logger.info(f"Limpiado mensaje de asistente con tool_calls huérfanos en posición {i}")
+                    else:
+                        clean_messages.append(msg)
+                else:
+                    clean_messages.append(msg)
+
+            # Reemplazar mensajes originales con los limpiados
+            self.messages = clean_messages
+        else:
+            logger.info("No se encontraron tool_calls huérfanos en el historial")
